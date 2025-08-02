@@ -21,12 +21,14 @@ jobs:
       - name: Deploy to shinyapps.io
         run: |
           # Set bundle size limit to 5GB
-          options(rsconnect.max.bundle.size = 1 * 1024^3)
+          options(rsconnect.max.bundle.size = 5 * 1024^3)
           
           # Configure account
-          rsconnect::setAccountInfo(name='agoepper',
-			  token='F7A940622DFDB18E32BD9A970F6381C5',
-			  secret='/LNYzzJqpU90hz+eCgClVHealf7kOfbSDgQiG/40')
+          rsconnect::setAccountInfo(
+            name = "agoepper",
+            token = "${{ secrets.SHINYAPPS_TOKEN }}",
+            secret = "${{ secrets.SHINYAPPS_SECRET }}"
+          )
           
           # Deploy the application
           rsconnect::deployApp(

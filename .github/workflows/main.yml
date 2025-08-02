@@ -11,6 +11,9 @@ jobs:
     
     container:
       image: rocker/shiny-verse:latest
+      
+    env:
+      CXXFLAGS: "-Wno-error=format-security"
 
     steps:
       - name: Install git and git-lfs
@@ -30,5 +33,5 @@ jobs:
 
       - name: Deploy to shinyapps.io
         run: |
-          R -e "options(rsconnect.max.bundle.size = 5 * 1024^3); rsconnect::setAccountInfo(name = 'agoepper', token = '${{ secrets.SHINYAPPS_TOKEN }}', secret = '${{ secrets.SHINYAPPS_SECRET }}'); rsconnect::deployApp(appName = 'AgglomerationEffectsUSA')"
+          R -e "options(rsconnect.max.bundle.size = 1 * 1024^3); rsconnect::setAccountInfo(name = 'agoepper', token = '${{ secrets.SHINYAPPS_TOKEN }}', secret = '${{ secrets.SHINYAPPS_SECRET }}'); rsconnect::deployApp(appName = 'AgglomerationEffectsUSA')"
 

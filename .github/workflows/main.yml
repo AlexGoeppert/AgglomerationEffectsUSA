@@ -30,6 +30,10 @@ jobs:
         run: |
           R -e "install.packages(c('shiny', 'fixest', 'dplyr', 'haven', 'glue', 'stringr', 'shinycssloaders', 'DT', 'rsconnect'))"
 
+      - name: Create .rscignore file
+        run: echo "renv.lock" > .rscignore
+
       - name: Deploy to shinyapps.io
         run: |
           R -e "options(rsconnect.max.bundle.size = 5 * 1024^3); rsconnect::setAccountInfo(name = 'agoepper', token = '${{ secrets.SHINYAPPS_TOKEN }}', secret = '${{ secrets.SHINYAPPS_SECRET }}'); rsconnect::deployApp(appName = 'AgglomerationEffectsUSA')"
+

@@ -13,10 +13,10 @@ jobs:
       image: rocker/shiny-verse:latest
 
     steps:
-      - name: Install git
+      - name: Install git and git-lfs
         run: |
           apt-get update
-          apt-get install -y git
+          apt-get install -y git git-lfs
 
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -31,3 +31,4 @@ jobs:
       - name: Deploy to shinyapps.io
         run: |
           R -e "options(rsconnect.max.bundle.size = 5 * 1024^3); rsconnect::setAccountInfo(name = 'agoepper', token = '${{ secrets.SHINYAPPS_TOKEN }}', secret = '${{ secrets.SHINYAPPS_SECRET }}'); rsconnect::deployApp(appName = 'AgglomerationEffectsUSA')"
+

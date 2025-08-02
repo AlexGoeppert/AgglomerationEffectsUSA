@@ -28,10 +28,8 @@ jobs:
 
       - name: Install R Dependencies
         run: |
-          R -e "install.packages(c('rsconnect', 'renv'))"
-          R -e "renv::restore()"
+          R -e "install.packages(c('shiny', 'fixest', 'dplyr', 'haven', 'glue', 'stringr', 'shinycssloaders', 'DT', 'rsconnect'))"
 
       - name: Deploy to shinyapps.io
         run: |
-          R -e "options(rsconnect.max.bundle.size = 1 * 1024^3); rsconnect::setAccountInfo(name = 'agoepper', token = '${{ secrets.SHINYAPPS_TOKEN }}', secret = '${{ secrets.SHINYAPPS_SECRET }}'); rsconnect::deployApp(appName = 'AgglomerationEffectsUSA')"
-
+          R -e "options(rsconnect.max.bundle.size = 5 * 1024^3); rsconnect::setAccountInfo(name = 'agoepper', token = '${{ secrets.SHINYAPPS_TOKEN }}', secret = '${{ secrets.SHINYAPPS_SECRET }}'); rsconnect::deployApp(appName = 'AgglomerationEffectsUSA')"

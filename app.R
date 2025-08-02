@@ -3,7 +3,7 @@
 #   • Added First-Stage F-Statistic reporting for IV regressions
 #   • Enhanced professional table formatting
 #   • Improved instrument strength diagnostics
-# ============================================================================
+# ===========================================================================
 
 # --- 1. Load Required Packages ------------------------------------------------
 library(shiny)

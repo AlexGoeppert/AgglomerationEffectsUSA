@@ -1142,7 +1142,7 @@ server <- function(input, output, session) {
       se_description <- paste0("Cluster on State (", n_clusters, " clusters)")
     } else if (details$se_spec == "spatial") {
       spatial_cutoff_formatted <- sprintf("%.0f", as.numeric(details$spatial_cutoff))
-      se_description <- paste0("Spatial (Conley). ", spatial_cutoff_formatted, " km cutoff. Uniform kernel [fixest]")
+      se_description <- paste0("Spatial (Conley). ", spatial_cutoff_formatted, " km cutoff. Uniform kernel")
     } else if (details$se_spec == "robust") {
       se_description <- "Robust (Heteroskedasticity-robust)"
     }
@@ -1177,7 +1177,7 @@ server <- function(input, output, session) {
     adjustment_text <- paste0('<strong>Schooling Adjustment:</strong> ', get_schooling_adj_name(details$schooling_adj))
     if (details$apply_college_adj && !is.null(details$college_coeff)) {
       college_coeff_formatted <- sprintf("%.2f", as.numeric(details$college_coeff))
-      adjustment_text <- paste0(adjustment_text, '<br><strong>College Share Adjustment:</strong> Yes (coefficient = ', college_coeff_formatted, '- Moretti (AER. 2004) estimates between 0.5 and 0.7.)')
+      adjustment_text <- paste0(adjustment_text, '<br><strong>College Share Adjustment:</strong> Yes (coefficient = ', college_coeff_formatted, ' - Moretti (AER. 2004) estimates between 0.5 and 0.7.)')
     } else {
       adjustment_text <- paste0(adjustment_text, '<br><strong>College Share Adjustment:</strong> No')
     }

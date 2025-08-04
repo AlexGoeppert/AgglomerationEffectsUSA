@@ -1,11 +1,5 @@
-# ============================================================================
-# Shiny App for MSA and County Level Analysis (V29 – with First-Stage F-Stat)
-#   • Added First-Stage F-Statistic reporting for IV regressions
-#   • Enhanced professional table formatting
-#   • Improved instrument strength diagnostics
-# ===========================================================================
-
 # --- 1. Load Required Packages ------------------------------------------------
+
 library(shiny)
 library(fixest)
 library(dplyr)
@@ -16,6 +10,7 @@ library(shinycssloaders) # For withSpinner
 library(DT) # For professional table display
 
 # --- 2. Load Data on Startup --------------------------------------------------
+
 tryCatch({
   msa_data    <- haven::read_dta("MSA_analysis_data.dta")
   county_data <- haven::read_dta("master_county_build.dta")
@@ -24,6 +19,7 @@ tryCatch({
 })
 
 # --- 3. Territory Filtering Function ------------------------------------------
+
 get_territory_exclusions <- function(data, fe_column_name, id_column) {
   territory_patterns <- c("territory", "territoy", "territ", "organised", "organized", "district", "columbia", "\\bdc\\b")
   
@@ -48,9 +44,9 @@ help_analysis_level      <- "Pick the geography to study: entire metro areas (MS
 help_year_modern         <- "Year in which today's productivity and employment data are measured."
 help_analysis_type       <- paste(
   "Estimation method:",
-  " • OLS – simple correlation.",
-  " • IV – corrects endogeneity with a historical density instrument.",
-  " • First Stage – shows only the instrument → density regression.",
+  " • OLS – simple correlation between density and productivity.",
+  " • IV – uses historical population density as instrument for modern density.",
+  " • First-stage regression – shows historical density → modern density relationship.",
   sep = "\n")
 
 # Fixed effects & scope
@@ -64,49 +60,52 @@ help_sample_scope        <- paste(
 
 # Standardized settings (used for both MSA and County)
 help_sectors             <- "Select the productivity measure used to calculate productivity and density."
-help_sample_year         <- "Historical year that defines which modern geographic units lie inside the U.S. border."
-help_iv_year             <- "Historical year that supplies the population‑density instrument."
+help_sample_year         <- "Historical year that defines which modern geographic units lie inside the U.S. border for sample inclusion."
+help_iv_year             <- "Historical year from which population density is extracted to construct the instrument."
 help_controls            <- "Add optional historical controls (waterways, early railroads, etc.)."
 help_schooling_adj       <- paste(
-  "Adjust productivity for schooling:",
+  "Adjust productivity for schooling using Mincerian return to schooling:",
   " • None – no adjustment.",
-  " • Same Return – nationwide return to schooling.",
-  " • Specific Return – return varies by geographic unit.",
+  " • Same Return – nationwide Mincerian return to schooling.",
+  " • Specific Return – Mincerian return varies by geographic unit.",
   " • Run Both – estimate both adjustments.",
   sep = "\n")
 help_apply_college_adj   <- "Subtract coef × modern college‑educated share from productivity."
-help_college_coeff       <- "Coefficient used for the college‑share adjustment."
+help_college_coeff       <- "Moretti (AER. 2004) obtains estimates between 0.5 and 0.7 in his most flexible specifications (Table 3. column 10). This coefficient adjusts productivity for human capital spillovers."
 help_mining_filter_active<- "Exclude geographic units whose mining share exceeds the threshold below."
 help_mining_threshold    <- "Maximum allowed mining share of total output."
 help_se_spec             <- paste(
   "Standard‑error option:",
   " • Cluster on Instrument – clusters by shared historical instrument.",
   " • Cluster on State – clusters by modern state.",
-  " • Spatial (Conley) – distance‑based correction.",
+  " • Spatial (Conley (uniform kernel)) – distance‑based correction.",
   " • Robust – heteroskedasticity‑robust.",
   sep = "\n")
-help_spatial_cutoff      <- "Distance in km beyond which spatial correlation is set to zero."
+
+# Spatial standard error settings
+help_spatial_cutoff      <- "Distance in km beyond which spatial correlation is set to zero and uniform kernel with constant weight within cutoff distance."
+help_spatial_kernel      <- "Uniform kernel with constant weight within cutoff distance. Uses fixest conley() function for spatial standard error calculation."
 
 # MSA‑specific settings
 help_exclude_multistate_msa  <- "Drop MSAs that cross more than one state."
 help_msa_instrument_type     <- paste(
-  "How to link historical counties with today's MSA:",
-  " • Intersect – any overlap counts.",
-  " • Overlap – only if ≥ chosen % of the county lies inside the MSA.",
+  "How to construct the historical density instrument:",
+  " • Overlap – maximum density among historical counties with ≥ chosen % overlap with modern MSA.",
   sep = "\n")
-help_msa_overlap_pct         <- "Minimum % of a historical county's area that must fall inside the MSA (for the Overlap instrument)."
+help_msa_overlap_pct         <- "Minimum % of a historical county's area that must overlap with the MSA."
 
 # County‑specific settings
 help_county_msa_restriction  <- "Keep only counties that belong to a modern MSA."
 help_county_instrument_type  <- paste(
-  "Instrument construction:",
-  " • Max Density – takes the highest historical density.",
-  " • Weighted Density – weighted average of relevant historical counties.",
-  "Use 'Overlap' or 'Intersect' versions to decide how counties qualify.",
+  "Historical density instrument construction:",
+  " • Max Density – maximum density among relevant historical counties.",
+  " • Weighted Density – weighted average density of relevant historical counties.",
+  "Use 'Overlap' versions for counties with ≥ threshold % overlap. Use 'Intersect' versions for any overlap.",
   sep = "\n")
-help_county_overlap_threshold <- "Minimum % overlap for a historical county that must fall inside the modern county (for Overlap instruments)."
+help_county_overlap_threshold <- "Minimum % overlap required between historical and modern counties (for Overlap instruments)."
 
 # --- Helper for labelled inputs ----------------------------------------------
+
 labeledInput <- function(inputId, labelText, inputUI, helpId, helpText) {
   div(
     class = "labeled-input-container",
@@ -123,7 +122,14 @@ labeledInput <- function(inputId, labelText, inputUI, helpId, helpText) {
 # 5. User Interface (UI) -------------------------------------------------------
 # ============================================================================
 ui <- fluidPage(
-  titlePanel("Regression Interface: MSA and County Level Analysis"),
+  titlePanel(div(
+    h2("Regression Interface: MSA and County Level Analysis"),
+    p(style="margin-top: 10px; font-size: 14px;", 
+      "Code, data and maps available at: ",
+      a("Github", 
+        href="https://github.com/AlexGoeppert/AgglomerationEffectsUSA", 
+        target="_blank", style="color: #007BFF;"))
+  )),
   
   # Enhanced CSS for professional table styling
   tags$head(tags$style(HTML("
@@ -220,6 +226,35 @@ ui <- fluidPage(
       color: #343a40;
       font-weight: 600;
     }
+  ")),
+            tags$script(HTML("
+    // Simple validation for text inputs used as numeric inputs
+    $(document).ready(function() {
+      // Add input validation and formatting
+      var numericTextInputs = ['#msa_college_coeff', '#msa_mining_threshold', '#msa_spatial_cutoff', 
+                               '#county_college_coeff', '#county_mining_threshold', '#county_spatial_cutoff'];
+      
+      numericTextInputs.forEach(function(selector) {
+        $(document).on('input', selector, function() {
+          var value = this.value;
+          // Allow numbers, periods, and commas, but replace commas with periods
+          value = value.replace(/[^0-9.,]/g, '').replace(/,/g, '.');
+          // Ensure only one period
+          var parts = value.split('.');
+          if (parts.length > 2) {
+            value = parts[0] + '.' + parts.slice(1).join('');
+          }
+          this.value = value;
+        });
+        
+        $(document).on('blur', selector, function() {
+          var value = parseFloat(this.value.replace(/,/g, '.'));
+          if (!isNaN(value)) {
+            this.value = value.toString();
+          }
+        });
+      });
+    });
   "))),
   
   sidebarLayout(
@@ -244,7 +279,7 @@ ui <- fluidPage(
                  # ── 2. Analysis Settings ───────────────────────────────
                  h4("2. Analysis Settings"),
                  labeledInput("analysis_type", "Analysis Method:",
-                              selectInput("analysis_type", NULL, c("IV", "OLS", "FirstStage"), "IV"),
+                              selectInput("analysis_type", NULL, c("IV", "OLS", "First-stage Regression"), "IV"),
                               "help_analysis_type", help_analysis_type),
                  hr(),
                  
@@ -281,9 +316,9 @@ ui <- fluidPage(
                                 selectInput("msa_iv_year", NULL, seq(1790, 1860, 10), 1840),
                                 "help_msa_iv_year", help_iv_year),
                    labeledInput("msa_instrument_type", "Instrument Type:",
-                                selectInput("msa_instrument_type", NULL, c("overlap", "intersect")),
+                                selectInput("msa_instrument_type", NULL, c("overlap")),
                                 "help_msa_instrument_type", help_msa_instrument_type),
-                   labeledInput("msa_overlap_pct", "Overlap % (if applicable):",
+                   labeledInput("msa_overlap_pct", "Overlap %:",
                                 selectInput("msa_overlap_pct", NULL, c(5,10,20,30,40,50,60,70,80,90), 5),
                                 "help_msa_overlap_pct", help_msa_overlap_pct),
                    labeledInput("msa_controls", "Control Variables:",
@@ -297,21 +332,21 @@ ui <- fluidPage(
                        actionButton("help_msa_apply_college_adj", NULL, icon=icon("question-circle"), class="help-btn")),
                    conditionalPanel("input.help_msa_apply_college_adj % 2 == 1", div(class="help-text", help_apply_college_adj)),
                    labeledInput("msa_college_coeff", "College Share Coefficient:",
-                                numericInput("msa_college_coeff", NULL, 0.75, 0, 2, 0.05),
+                                textInput("msa_college_coeff", NULL, "0.75", placeholder = "0.75"),
                                 "help_msa_college_coeff", help_college_coeff),
                    div(class="input-button-row", style="margin-bottom:15px;",
                        checkboxInput("msa_mining_filter_active", "Filter by Mining Share", value = FALSE),
                        actionButton("help_msa_mining_filter_active", NULL, icon=icon("question-circle"), class="help-btn")),
                    conditionalPanel("input.help_msa_mining_filter_active % 2 == 1", div(class="help-text", help_mining_filter_active)),
                    labeledInput("msa_mining_threshold", "Max Mining Share:",
-                                numericInput("msa_mining_threshold", NULL, 0.01, 0, 1, 0.01),
+                                textInput("msa_mining_threshold", NULL, "0.01", placeholder = "0.01"),
                                 "help_msa_mining_threshold", help_mining_threshold),
                    labeledInput("msa_se_spec", "Standard Errors:",
                                 selectInput("msa_se_spec", NULL, c("Cluster on Instrument"="cluster_instrument", "Cluster on State"="cluster_state", "Spatial (Conley)"="spatial", "Robust"="robust"), "cluster_instrument"),
                                 "help_msa_se_spec", help_se_spec),
                    conditionalPanel("input.msa_se_spec == 'spatial'",
                                     labeledInput("msa_spatial_cutoff", "Spatial Cutoff (km):",
-                                                 numericInput("msa_spatial_cutoff", NULL, 100),
+                                                 textInput("msa_spatial_cutoff", NULL, "100", placeholder = "100"),
                                                  "help_msa_spatial_cutoff", help_spatial_cutoff))
                  ),
                  
@@ -330,7 +365,7 @@ ui <- fluidPage(
                                 selectInput("county_sample_year", NULL, seq(1790, 1840, 10), 1790),
                                 "help_county_sample_year", help_sample_year),
                    labeledInput("county_iv_year", "Instrument Year:",
-                                selectInput("county_iv_year", NULL, seq(1790, 1840, 10), 1840),
+                                selectInput("county_iv_year", NULL, seq(1790, 1860, 10), 1840),
                                 "help_county_iv_year", help_iv_year),
                    labeledInput("county_instrument_type", "Instrument Type:",
                                 selectInput("county_instrument_type", NULL, c("Max Density Overlap"="max_density_overlap", "Weighted Density Overlap"="weighted_density_overlap", "Max Density Intersect"="max_density_intersect", "Weighted Density Intersect"="weighted_density_intersect"), "max_density_overlap"),
@@ -349,21 +384,21 @@ ui <- fluidPage(
                        actionButton("help_county_apply_college_adj", NULL, icon=icon("question-circle"), class="help-btn")),
                    conditionalPanel("input.help_county_apply_college_adj % 2 == 1", div(class="help-text", help_apply_college_adj)),
                    labeledInput("county_college_coeff", "College Share Coefficient:",
-                                numericInput("county_college_coeff", NULL, 0.75, 0, 2, 0.05),
+                                textInput("county_college_coeff", NULL, "0.75", placeholder = "0.75"),
                                 "help_county_college_coeff", help_college_coeff),
                    div(class="input-button-row", style="margin-bottom:15px;",
                        checkboxInput("county_mining_filter_active", "Filter by Mining Share", value = FALSE),
                        actionButton("help_county_mining_filter_active", NULL, icon=icon("question-circle"), class="help-btn")),
                    conditionalPanel("input.help_county_mining_filter_active % 2 == 1", div(class="help-text", help_mining_filter_active)),
                    labeledInput("county_mining_threshold", "Max Mining Share:",
-                                numericInput("county_mining_threshold", NULL, 0.01, 0, 1, 0.01),
+                                textInput("county_mining_threshold", NULL, "0.01", placeholder = "0.01"),
                                 "help_county_mining_threshold", help_mining_threshold),
                    labeledInput("county_se_spec", "Standard Errors:",
                                 selectInput("county_se_spec", NULL, c("Cluster on Instrument"="cluster_instrument", "Cluster on State"="cluster_state", "Spatial (Conley)"="spatial", "Robust"="robust"), "cluster_instrument"),
                                 "help_county_se_spec", help_se_spec),
                    conditionalPanel("input.county_se_spec == 'spatial'",
                                     labeledInput("county_spatial_cutoff", "Spatial Cutoff (km):",
-                                                 numericInput("county_spatial_cutoff", NULL, 100),
+                                                 textInput("county_spatial_cutoff", NULL, "100", placeholder = "100"),
                                                  "help_county_spatial_cutoff", help_spatial_cutoff))
                  )
     ), # sidebarPanel
@@ -386,6 +421,18 @@ server <- function(input, output, session) {
   
   analysis_output <- reactiveVal(NULL)
   map_output <- reactiveVal(NULL)
+  
+  # Simple helper function to safely convert text inputs to numeric
+  safe_numeric <- function(value, default = 0) {
+    if (is.null(value) || value == "" || is.na(value)) return(default)
+    
+    # Replace commas with periods and convert to numeric
+    clean_value <- gsub(",", ".", as.character(value))
+    result <- suppressWarnings(as.numeric(clean_value))
+    
+    if (is.na(result)) return(default)
+    return(result)
+  }
   
   observeEvent(input$run_analysis, {
     
@@ -416,12 +463,12 @@ server <- function(input, output, session) {
             controls_vec <- input$msa_controls
             schooling_adj <- as.numeric(input$msa_schooling_adj)
             apply_college_adj <- input$msa_apply_college_adj
-            college_coeff <- input$msa_college_coeff
+            college_coeff <- safe_numeric(input$msa_college_coeff, 0.75)
             se_spec <- input$msa_se_spec
             mining_filter_active <- input$msa_mining_filter_active
-            mining_threshold <- input$msa_mining_threshold
+            mining_threshold <- safe_numeric(input$msa_mining_threshold, 0.01)
             exclude_multistate <- input$exclude_multistate_msa
-            spatial_cutoff <- input$msa_spatial_cutoff
+            spatial_cutoff <- safe_numeric(input$msa_spatial_cutoff, 100)
           })
           
           df <- msa_data %>%
@@ -435,13 +482,9 @@ server <- function(input, output, session) {
               filter(!(str_detect(msaname, ",") & str_detect(str_extract(msaname, ",.*"), "-")))
           }
           
-          if (instrument_type == "overlap") {
-            sample_col <- glue("MSAol_{sample_year}_{overlap_pct}{suffix}")
-            instr_col  <- glue("MSAol_{iv_year}_{overlap_pct}{suffix}")
-          } else {
-            sample_col <- glue("MSAiv_{sample_year}{suffix}")
-            instr_col  <- glue("MSAiv_{iv_year}{suffix}")
-          }
+          # Simplified logic - only overlap for MSA
+          sample_col <- glue("MSAol_{sample_year}_{overlap_pct}{suffix}")
+          instr_col  <- glue("MSAol_{iv_year}_{overlap_pct}{suffix}")
           
           # Apply territory filtering for states-only analysis
           if (sample_scope == "states_only") {
@@ -496,15 +539,15 @@ server <- function(input, output, session) {
             }
           }
           
+          # MODIFIED: Use total employment (employment) for RHS across all sectors
           df <- switch(
             as.character(sectors),
             "1" = df %>% mutate(RHS = log(employment / (msaarea / 4046.8)), LHS = ln_output_worker),
-            "2" = df %>% mutate(RHS = log(employment_private / (msaarea / 4046.8)), LHS = ln_output_worker_private),
-            "3" = df %>% mutate(RHS = log(emply_indryid_500 / (msaarea / 4046.8)), LHS = log(gmp_indstryid_12 / emply_indryid_500)),
-            "4" = df %>% mutate(RHS = log(employment_private_nonfarm / (msaarea / 4046.8)), LHS = log((gmp_private_industry - gmp_agriculture) / employment_private_nonfarm)),
-            "5" = df %>% mutate(employment_private_no_am = employment_private_nonfarm - employment_mining,
-                                RHS = log(employment_private_no_am / (msaarea / 4046.8)),
-                                LHS = log((gmp_private_industry - gmp_agriculture - gmp_mining) / employment_private_no_am)) %>% select(-employment_private_no_am),
+            "2" = df %>% mutate(RHS = log(employment / (msaarea / 4046.8)), LHS = ln_output_worker_private),
+            "3" = df %>% mutate(RHS = log(employment / (msaarea / 4046.8)), LHS = log(gmp_indstryid_12 / emply_indryid_500)),
+            "4" = df %>% mutate(RHS = log(employment / (msaarea / 4046.8)), LHS = log((gmp_private_industry - gmp_agriculture) / employment_private_nonfarm)),
+            "5" = df %>% mutate(RHS = log(employment / (msaarea / 4046.8)),
+                                LHS = log((gmp_private_industry - gmp_agriculture - gmp_mining) / (employment_private_nonfarm - employment_mining))),
             stop("Invalid MSA sector specified.")
           )
           
@@ -525,12 +568,12 @@ server <- function(input, output, session) {
             controls_vec <- input$county_controls
             schooling_adj <- as.numeric(input$county_schooling_adj)
             apply_college_adj <- input$county_apply_college_adj
-            college_coeff <- input$county_college_coeff
+            college_coeff <- safe_numeric(input$county_college_coeff, 0.75)
             se_spec <- input$county_se_spec
             mining_filter_active <- input$county_mining_filter_active
-            mining_threshold <- input$county_mining_threshold
+            mining_threshold <- safe_numeric(input$county_mining_threshold, 0.01)
             county_msa_restriction <- input$county_msa_restriction
-            spatial_cutoff <- input$county_spatial_cutoff
+            spatial_cutoff <- safe_numeric(input$county_spatial_cutoff, 100)
           })
           
           df <- county_data %>%
@@ -616,19 +659,15 @@ server <- function(input, output, session) {
             stop("Error: Invalid instrument_type for County level specified.")
           }
           
+          # MODIFIED: Use total employment (employment_total) for RHS across all sectors
           df <- switch(
             as.character(sectors),
             "1" = df %>% mutate(RHS = log(employment_total / area_acre), LHS = log(gcp_total / employment_total)),
-            "2" = df %>% mutate(temp_emp = employment_private_nonfarm + emply_c_indryid_70,
-                                RHS = log(temp_emp / area_acre),
-                                LHS = log(gcp_private_industry / temp_emp)) %>% select(-temp_emp),
+            "2" = df %>% mutate(RHS = log(employment_total / area_acre), LHS = log(gcp_private_industry / (employment_private_nonfarm + emply_c_indryid_70))),
             "3" = df %>% rename(gcp_manufact = gcp_indstryid_12) %>%
-              mutate(RHS = log(emply_c_indryid_500 / area_acre), LHS = log(gcp_manufact / emply_c_indryid_500)),
-            "4" = df %>% mutate(RHS = log(employment_private_nonfarm / area_acre), LHS = log((gcp_private_industry - gcp_agriculture) / employment_private_nonfarm)),
-            "5" = df %>% mutate(temp_emp = employment_private_nonfarm - employment_mining,
-                                temp_gcp = gcp_private_industry - gcp_agriculture - gcp_mining,
-                                RHS = log(temp_emp / area_acre),
-                                LHS = log(temp_gcp / temp_emp)) %>% select(-temp_emp, -temp_gcp),
+              mutate(RHS = log(employment_total / area_acre), LHS = log(gcp_manufact / emply_c_indryid_500)),
+            "4" = df %>% mutate(RHS = log(employment_total / area_acre), LHS = log((gcp_private_industry - gcp_agriculture) / employment_private_nonfarm)),
+            "5" = df %>% mutate(RHS = log(employment_total / area_acre), LHS = log((gcp_private_industry - gcp_agriculture - gcp_mining) / (employment_private_nonfarm - employment_mining))),
             stop("Invalid County sector specified.")
           )
           
@@ -701,13 +740,21 @@ server <- function(input, output, session) {
             fe_part <- fe_var_name
           }
         }
-        vcov_arg <- switch(se_spec,
-                           "robust" = "hetero",
-                           "cluster_instrument" = ~clusterID,
-                           "cluster_state" = ~state_id,
-                           "spatial" = vcov_conley(lat = "lat", lon = "lon", cutoff = spatial_cutoff),
-                           stop("Invalid 'se_spec' defined.")
-        )
+        
+        # Determine vcov argument based on standard error specification
+        if (se_spec == "spatial") {
+          # For spatial standard errors using fixest's conley() function
+          # First set the coordinates for Conley standard errors
+          setFixest_fml(..vcov.conley = ~ lat + lon)
+          vcov_arg <- conley(cutoff = spatial_cutoff, distance = "spherical")
+        } else {
+          vcov_arg <- switch(se_spec,
+                             "robust" = "hetero",
+                             "cluster_instrument" = ~clusterID,
+                             "cluster_state" = ~state_id,
+                             stop("Invalid 'se_spec' defined.")
+          )
+        }
         
         incProgress(0.7, detail = "Estimating models...")
         models <- list()
@@ -720,7 +767,7 @@ server <- function(input, output, session) {
           formula_str <- switch(analysis_type,
                                 "OLS" = glue("{dep_var_name} ~ RHS {controls_part} | {fe_part}"),
                                 "IV"  = glue("{dep_var_name} ~ 1 {controls_part} | {fe_part} | RHS ~ instrument"),
-                                "FirstStage" = glue("RHS ~ instrument {controls_part} | {fe_part}"),
+                                "First-stage Regression" = glue("RHS ~ instrument {controls_part} | {fe_part}"),
                                 stop("Invalid 'analysis_type' specified.")
           )
           
@@ -742,7 +789,22 @@ server <- function(input, output, session) {
           models = models,
           first_stage_models = first_stage_models,
           analysis_type = analysis_type,
+          analysis_level = analysis_level,
+          year_modern = year_modern,
+          sectors = sectors,
+          sample_year = sample_year,
+          iv_year = iv_year,
+          instrument_type = if(analysis_level == "MSA") instrument_type else instrument_type,
+          overlap_pct = if(analysis_level == "MSA") overlap_pct else overlap_threshold,
+          schooling_adj = schooling_adj,
+          apply_college_adj = apply_college_adj,
+          college_coeff = if(apply_college_adj) college_coeff else NULL,
+          mining_filter_active = mining_filter_active,
+          mining_threshold = if(mining_filter_active) mining_threshold else NULL,
+          exclude_multistate = if(analysis_level == "MSA") exclude_multistate else NULL,
+          county_msa_restriction = if(analysis_level == "County") county_msa_restriction else NULL,
           se_spec = se_spec,
+          spatial_cutoff = if(se_spec == "spatial") spatial_cutoff else NULL,
           fe_type = if(use_fe) fe_type else "No",
           sample_scope = sample_scope,
           controls = if(length(controls_vec) > 0) paste(controls_vec, collapse = ", ") else "None",
@@ -770,24 +832,18 @@ server <- function(input, output, session) {
       scope_folder <- if (scope == "states_territories") "states_and_territories" else "states_only"
       
       map_path <- NULL
-      map_title <- "Map not available for the selected instrument type or settings."
+      map_title <- "Instrument Map: Historical density instrument map not available for the selected settings."
       
       if (level == "MSA") {
-        type <- input$msa_instrument_type
         year <- input$msa_iv_year
         pct <- input$msa_overlap_pct
         base_folder <- paste("www", "MSA Maps", scope_folder, sep="/")
         
-        if (type == "intersect") {
-          filename <- glue("intersect_{year}.png")
-          map_path <- paste(base_folder, "intersect", filename, sep="/")
-          map_title <- glue("Instrument Map: MSA Intersect ({year})")
-        } else if (type == "overlap") {
-          filename <- glue("overlap_{pct}pct_{year}.png")
-          subfolder <- glue("{pct}pct")
-          map_path <- paste(base_folder, "overlap", subfolder, filename, sep="/")
-          map_title <- glue("Instrument Map: MSA Overlap {pct}% ({year})")
-        }
+        # Simplified logic - only overlap for MSA
+        filename <- glue("overlap_{pct}pct_{year}.png")
+        subfolder <- glue("{pct}pct")
+        map_path <- paste(base_folder, "overlap", subfolder, filename, sep="/")
+        map_title <- glue("Instrument Map: Maximum density among {year} historical counties with {pct}% minimum overlap with modern MSA")
         
       } else { # County Logic
         type <- input$county_instrument_type
@@ -798,12 +854,12 @@ server <- function(input, output, session) {
         if (type == "max_density_intersect") {
           filename <- glue("max_intersect_{year}.png")
           map_path <- paste(base_folder, "max_intersect", filename, sep="/")
-          map_title <- glue("Instrument Map: County Max Density Intersect ({year})")
+          map_title <- glue("Instrument Map: Maximum density among {year} historical counties with any overlap with modern county")
         } else if (type == "max_density_overlap") {
           filename <- glue("max_overlap_{pct}pct_{year}.png")
           subfolder <- glue("{pct}pct")
           map_path <- paste(base_folder, "max_overlap", subfolder, filename, sep="/")
-          map_title <- glue("Instrument Map: County Max Density Overlap {pct}% ({year})")
+          map_title <- glue("Instrument Map: Maximum density among {year} historical counties with {pct}% minimum overlap with modern county")
         }
       }
       
@@ -857,8 +913,8 @@ server <- function(input, output, session) {
     # Function to get nice variable names
     get_var_label <- function(var_name) {
       switch(var_name,
-             "fit_RHS" = "log(Employment Density) [Instrumented]",
-             "RHS" = "log(Employment Density)",
+             "fit_RHS" = "log(Total Employment Density) [Instrumented]",
+             "RHS" = "log(Total Employment Density)",
              "instrument" = "Historical Density Instrument",
              "water_18201" = "Water Access 1820",
              "railroads_18401" = "Railroads 1840", 
@@ -876,6 +932,7 @@ server <- function(input, output, session) {
           model_name <- model_names[i]
           model <- models[[i]]
           
+          # Handle fixest format
           coefs <- coef(model)
           ses <- se(model) 
           pvals <- pvalue(model)
@@ -934,7 +991,10 @@ server <- function(input, output, session) {
     html_parts <- c(html_parts, paste0('<tr><td class="row-label"></td>', empty_cells, '</tr>'))
     
     # Statistics rows with top border
-    n_cells <- paste(sapply(models, function(m) paste0('<td class="stats">', format(nobs(m), big.mark = ","), '</td>')), collapse = "")
+    n_cells <- paste(sapply(models, function(m) {
+      n_obs <- nobs(m)
+      paste0('<td class="stats">', format(n_obs, big.mark = ","), '</td>')
+    }), collapse = "")
     html_parts <- c(html_parts, paste0('<tr class="top-border"><td class="row-label stats">Observations</td>', n_cells, '</tr>'))
     
     # Add First-Stage F-Statistic for IV regressions
@@ -959,23 +1019,6 @@ server <- function(input, output, session) {
             if (!is.na(coef_instr) && !is.na(se_instr) && se_instr != 0) {
               fstat_value <- (coef_instr / se_instr)^2
               fstat_value <- sprintf("%.2f", fstat_value)
-              return(paste0('<td class="stats">', fstat_value, '</td>'))
-            }
-          }
-          
-          # Method 3: Extract from IV model summary if available
-          iv_model <- models[[mn]]
-          model_summary <- summary(iv_model)
-          if ("iv_first_stage" %in% names(model_summary) && "fstat" %in% names(model_summary$iv_first_stage)) {
-            fstat_value <- sprintf("%.2f", model_summary$iv_first_stage$fstat)
-            return(paste0('<td class="stats">', fstat_value, '</td>'))
-          }
-          
-          # Method 4: Try using fixest's built-in first stage diagnostics
-          if (exists("fitstat")) {
-            iv_fstat <- fitstat(iv_model, type = "ivf")
-            if (!is.null(iv_fstat) && "stat" %in% names(iv_fstat)) {
-              fstat_value <- sprintf("%.2f", iv_fstat$stat)
               return(paste0('<td class="stats">', fstat_value, '</td>'))
             }
           }
@@ -1010,6 +1053,9 @@ server <- function(input, output, session) {
     note_text <- 'Notes: Standard errors in parentheses. *** p&lt;0.01, ** p&lt;0.05, * p&lt;0.1'
     if (analysis_type == "IV") {
       note_text <- paste0(note_text, '. First-Stage F-Stat tests instrument strength (F &gt; 10 indicates strong instrument).')
+    }
+    if (se_spec == "spatial") {
+      note_text <- paste0(note_text, '. Spatial standard errors computed using fixest conley() function with uniform kernel.')
     }
     html_parts <- c(html_parts, paste0('<div class="table-notes">', note_text, '</div>'))
     
@@ -1057,24 +1103,114 @@ server <- function(input, output, session) {
     
     details <- analysis_output()
     
-    # Add clustering information to SE description
+    # Helper function to format sector names
+    get_sector_name <- function(sector_num) {
+      sector_names <- c("1" = "All", "2" = "Private", "3" = "Manufacturing", 
+                        "4" = "Private non-farm", "5" = "Private non-farm/mining")
+      return(sector_names[as.character(sector_num)])
+    }
+    
+    # Helper function to format schooling adjustment
+    get_schooling_adj_name <- function(adj_num) {
+      adj_names <- c("0" = "None", "1" = "Same Return", "2" = "Specific Return", "3" = "Run Both")
+      return(adj_names[as.character(adj_num)])
+    }
+    
+    # Helper function to format instrument type
+    get_instrument_name <- function(instr_type, level) {
+      if (level == "MSA") {
+        switch(instr_type,
+               "overlap" = "Overlap",
+               instr_type)
+      } else {
+        switch(instr_type,
+               "max_density_overlap" = "Max Density Overlap",
+               "weighted_density_overlap" = "Weighted Density Overlap", 
+               "max_density_intersect" = "Max Density Intersect",
+               "weighted_density_intersect" = "Weighted Density Intersect",
+               instr_type)
+      }
+    }
+    
+    # Build comprehensive analysis details
     se_description <- details$se_spec
     if (details$se_spec == "cluster_instrument" && !is.null(details$cluster_data$clusterID)) {
       n_clusters <- length(unique(details$cluster_data$clusterID))
-      se_description <- paste0(se_description, " (", n_clusters, " clusters)")
+      se_description <- paste0("Cluster on Instrument (", n_clusters, " clusters)")
     } else if (details$se_spec == "cluster_state" && !is.null(details$cluster_data$state_id)) {
       n_clusters <- length(unique(details$cluster_data$state_id))
-      se_description <- paste0(se_description, " (", n_clusters, " clusters)")
+      se_description <- paste0("Cluster on State (", n_clusters, " clusters)")
+    } else if (details$se_spec == "spatial") {
+      spatial_cutoff_formatted <- sprintf("%.0f", as.numeric(details$spatial_cutoff))
+      se_description <- paste0("Spatial (Conley). ", spatial_cutoff_formatted, " km cutoff. Uniform kernel [fixest]")
+    } else if (details$se_spec == "robust") {
+      se_description <- "Robust (Heteroskedasticity-robust)"
     }
+    
+    # Create detailed information sections
+    detail_sections <- list()
+    
+    # Core Analysis Settings
+    detail_sections$core <- paste0(
+      '<strong>Analysis Level:</strong> ', details$analysis_level, '<br>',
+      '<strong>Modern Year:</strong> ', details$year_modern, '<br>',
+      '<strong>Analysis Method:</strong> ', details$analysis_type, '<br>',
+      '<strong>Sector:</strong> ', get_sector_name(details$sectors), '<br>'
+    )
+    
+    # Sample and Instrument Settings  
+    detail_sections$sample <- paste0(
+      '<strong>Sample Definition Year:</strong> ', details$sample_year, '<br>',
+      '<strong>Instrument Year:</strong> ', details$iv_year, '<br>',
+      '<strong>Instrument Type:</strong> ', get_instrument_name(details$instrument_type, details$analysis_level),
+      if (!is.null(details$overlap_pct)) paste0(' (', details$overlap_pct, '% overlap)') else '', '<br>',
+      '<strong>Sample Scope:</strong> ', details$sample_scope, '<br>'
+    )
+    
+    # Fixed Effects and Controls
+    detail_sections$controls <- paste0(
+      '<strong>State Fixed Effects:</strong> ', details$fe_type, '<br>',
+      '<strong>Control Variables:</strong> ', details$controls, '<br>'
+    )
+    
+    # Adjustments
+    adjustment_text <- paste0('<strong>Schooling Adjustment:</strong> ', get_schooling_adj_name(details$schooling_adj))
+    if (details$apply_college_adj && !is.null(details$college_coeff)) {
+      college_coeff_formatted <- sprintf("%.2f", as.numeric(details$college_coeff))
+      adjustment_text <- paste0(adjustment_text, '<br><strong>College Share Adjustment:</strong> Yes (coefficient = ', college_coeff_formatted, '- Moretti (AER. 2004) estimates between 0.5 and 0.7.)')
+    } else {
+      adjustment_text <- paste0(adjustment_text, '<br><strong>College Share Adjustment:</strong> No')
+    }
+    if (details$mining_filter_active && !is.null(details$mining_threshold)) {
+      mining_threshold_formatted <- sprintf("%.3f", as.numeric(details$mining_threshold))
+      adjustment_text <- paste0(adjustment_text, '<br><strong>Mining Filter:</strong> Yes (max share = ', mining_threshold_formatted, ')')
+    } else {
+      adjustment_text <- paste0(adjustment_text, '<br><strong>Mining Filter:</strong> No')
+    }
+    detail_sections$adjustments <- paste0(adjustment_text, '<br>')
+    
+    # Level-specific settings
+    if (details$analysis_level == "MSA" && !is.null(details$exclude_multistate)) {
+      detail_sections$level_specific <- paste0('<strong>Exclude Multi-state MSAs:</strong> ', 
+                                               if(details$exclude_multistate) "Yes" else "No", '<br>')
+    } else if (details$analysis_level == "County" && !is.null(details$county_msa_restriction)) {
+      detail_sections$level_specific <- paste0('<strong>Restrict to MSA Counties:</strong> ', 
+                                               if(details$county_msa_restriction) "Yes" else "No", '<br>')
+    }
+    
+    # Standard Errors and Sample Size
+    detail_sections$technical <- paste0(
+      '<strong>Standard Errors:</strong> ', se_description, '<br>',
+      '<strong>Total Observations:</strong> ', format(details$n_obs, big.mark = ",")
+    )
+    
+    # Combine all sections
+    all_details <- paste(unlist(detail_sections), collapse = "")
     
     HTML(paste0(
       '<div class="analysis-details">',
-      '<h5>Analysis Details</h5>',
-      '<strong>Standard Errors:</strong> ', se_description, '<br>',
-      '<strong>State Fixed Effects:</strong> ', details$fe_type, '<br>',
-      '<strong>Sample Scope:</strong> ', details$sample_scope, '<br>',
-      '<strong>Controls:</strong> ', details$controls, '<br>',
-      '<strong>Total Observations:</strong> ', format(details$n_obs, big.mark = ","),
+      '<h5> Regression Analysis Configuration</h5>',
+      all_details,
       '</div>'
     ))
   })

@@ -84,7 +84,7 @@ help_se_spec             <- paste(
 
 # Spatial standard error settings
 help_spatial_cutoff      <- "Distance in km beyond which spatial correlation is set to zero and uniform kernel with constant weight within cutoff distance."
-help_spatial_kernel      <- "Uniform kernel with constant weight within cutoff distance. Uses fixest conley() function for spatial standard error calculation."
+help_spatial_kernel      <- "Uniform kernel with constant weight within cutoff distance."
 
 # MSA‑specific settings
 help_exclude_multistate_msa  <- "Drop MSAs that cross more than one state."
@@ -1055,7 +1055,7 @@ server <- function(input, output, session) {
       note_text <- paste0(note_text, '. First-Stage F-Stat tests instrument strength (F &gt; 10 indicates strong instrument).')
     }
     if (se_spec == "spatial") {
-      note_text <- paste0(note_text, '. Spatial standard errors computed using fixest conley() function with uniform kernel.')
+      note_text <- paste0(note_text, '. Spatial standard errors computed using uniform kernel.')
     }
     html_parts <- c(html_parts, paste0('<div class="table-notes">', note_text, '</div>'))
     

@@ -355,13 +355,13 @@ ui <- fluidPage(
                        checkboxInput("county_msa_restriction", "Restrict to counties in an MSA", value = FALSE),
                        actionButton("help_county_msa_restriction", NULL, icon=icon("question-circle"), class="help-btn")),
                    conditionalPanel("input.help_county_msa_restriction % 2 == 1", div(class="help-text", help_county_msa_restriction)),
-                   labeledInput("county_sample_year", "Sample Definition Year:",
+                   labeledInput("county_sample_year", "Year of the Historical Territory:",
                                 selectInput("county_sample_year", NULL, seq(1790, 1860, 10), 1790),
                                 "help_county_sample_year", help_sample_year),
-                   labeledInput("county_iv_year", "Instrument Year:",
+                   labeledInput("county_iv_year", "Year of the Historical Population Density (Historical Census Year):",
                                 selectInput("county_iv_year", NULL, seq(1790, 1860, 10), 1840),
                                 "help_county_iv_year", help_iv_year),
-                   labeledInput("county_instrument_type", "Instrument Type:",
+                   labeledInput("county_instrument_type", "Match of Historical to Modern Geographic Units:",
                                 selectInput("county_instrument_type", NULL, c("Max Density Overlap"="max_density_overlap", "Weighted Density Overlap"="weighted_density_overlap"), "max_density_overlap"),
                                 "help_county_instrument_type", help_county_instrument_type),
                    labeledInput("county_overlap_threshold", "Overlap Threshold %:",
@@ -370,7 +370,7 @@ ui <- fluidPage(
                    labeledInput("county_controls", "Control Variables:",
                                 checkboxGroupInput("county_controls", NULL, c("Water Access 1820"="water_1820", "Railroads 1840"="railroads_1840", "Railroads 1850"="railroads_1850", "Railroads 1861"="railroads_1861")),
                                 "help_county_controls", help_controls),
-                   labeledInput("county_schooling_adj", "Schooling Adjustment:",
+                   labeledInput("county_schooling_adj", "Modern Adjustment for Human Capital",
                                 selectInput("county_schooling_adj", NULL, c("None"=0, "Same Return"=1, "Specific Return"=2, "Run Both"=3), 0),
                                 "help_county_schooling_adj", help_schooling_adj),
                    div(class="input-button-row", style="margin-bottom:15px;",
@@ -1206,7 +1206,7 @@ server <- function(input, output, session) {
     adjustment_text <- paste0('<strong> Modern Adjustment for Human Capital::</strong> ', get_schooling_adj_name(details$schooling_adj))
     if (details$apply_college_adj && !is.null(details$college_coeff)) {
       college_coeff_formatted <- sprintf("%.2f", as.numeric(details$college_coeff))
-      adjustment_text <- paste0(adjustment_text, '<br><strong>College Share Adjustment:</strong> Yes (coefficient = ', college_coeff_formatted, ' - Based on Moretti (2004)')
+      adjustment_text <- paste0(adjustment_text, '<br><strong>College Share Adjustment:</strong> Yes (coefficient = ', college_coeff_formatted, ' - Based on Moretti (2004))')
     } else {
       adjustment_text <- paste0(adjustment_text, '<br><strong>College Share Adjustment:</strong> No')
     }

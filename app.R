@@ -1085,9 +1085,6 @@ server <- function(input, output, session) {
     if (analysis_type == "IV") {
       note_text <- paste0(note_text, '. First-Stage F-Statistic tests instrument strength (F &gt; 10 indicates strong instrument).')
     }
-    if (analysis_type == "First-stage Regression") {
-      note_text <- paste0(note_text, '. F-Statistic tests overall significance of the regression. T-Statistic tests significance of the instrument.')
-    }
     if (se_spec == "spatial") {
       note_text <- paste0(note_text, '. Spatial standard errors computed using uniform kernel.')
     }

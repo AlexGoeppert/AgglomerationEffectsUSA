@@ -40,57 +40,56 @@ get_territory_exclusions <- function(data, fe_column_name, id_column) {
 
 # --- 4. Standardized help‑text strings  --------------------------------------
 # Master settings
-help_analysis_level      <- "Pick the geography to study: entire metro areas (MSAs) or individual counties."
-help_year_modern         <- "Year in which today's productivity and employment data are measured."
+help_analysis_level      <- "Pick the geography to study: metropolitan statistical areas (MSAs) or counties."
+help_year_modern         <- "Year in which modern productivity and employment are measured."
 help_analysis_type       <- paste(
   "Estimation method:",
-  " • OLS – simple correlation between density and productivity.",
-  " • IV – uses historical population density as instrument for modern density.",
-  " • First-stage regression – shows historical density → modern density relationship.",
+  " • OLS – ordinary least squares regression of modern productivity on modern employment density. ",
+  " • IV – instrumental variables regression using historical population density as an instrument for modern density. ",
+  " • First-stage regression – ordinary least squares regression of modern employment density on historical population density.",
   sep = "\n")
 
 # Fixed effects & scope
-help_use_fe              <- "State fixed effects remove any time‑invariant factors shared by locations in the same state."
-help_fe_type             <- "Choose the state borders for those fixed effects: modern borders or borders in the instrument year."
+help_use_fe              <- "State fixed effects to eliminate state level factors affecting modern productivity."
+help_fe_type             <- "Choose whether state fixed effects are used for modern states or historical states and territories."
 help_sample_scope        <- paste(
   "Which modern places stay in the sample?",
-  " • States Only – inside states admitted by the chosen year.",
-  " • States & Territories – also inside organised U.S. territories.",
+  " • Historical States Only – includes only the territory covered by historical states. ",
+  " • Historical States & Territories – also includes historical organized U.S. territories.",
   sep = "\n")
 
 # Standardized settings (used for both MSA and County)
-help_sectors             <- "Select the productivity measure used to calculate productivity and density."
-help_sample_year         <- "Historical year that defines which modern geographic units lie inside the U.S. border for sample inclusion."
-help_iv_year             <- "Historical year from which population density is extracted to construct the instrument."
-help_controls            <- "Add optional historical controls (waterways, early railroads, etc.)."
+help_sectors             <- "Select whether modern productivity (output per worker) used as the left-hand-side outcome is measured for the whole economy, the private economy, etc. The Right-hand-side employment density always refers to total employment. "
+help_sample_year         <- "Defines which modern geographic units are included in the empirical analysis."
+help_iv_year             <- "Defines which historical census is used to obtain historical population density (the instrument for modern employment density)."
+help_controls            <- "Add indicator variables for whether the geographic unit has access to waterways in 1820 (ocean, lakes, rivers, canals) or railroads in 1840, 1850, or 1861."
 help_schooling_adj       <- paste(
   "Adjust productivity for schooling using Mincerian return to schooling:",
   " • None – no adjustment.",
-  " • Same Return – nationwide Mincerian return to schooling.",
-  " • Specific Return – Mincerian return varies by geographic unit.",
-  " • Run Both – estimate both adjustments.",
+  " • Same Return – employs nationwide Mincerian return to schooling. ",
+  " • Specific Return – allows Mincerian return to vary with the employment density of the modern geographic unit.",
+  " • Run Both – shows separate results for both adjustments",
   sep = "\n")
 help_apply_college_adj   <- "Subtract coef × modern college‑educated share from productivity."
-help_college_coeff       <- "Moretti (AER. 2004) obtains estimates between 0.5 and 0.7 in his most flexible specifications (Table 3. column 10). This coefficient adjusts productivity for human capital spillovers."
-help_mining_filter_active<- "Exclude geographic units whose mining share exceeds the threshold below."
-help_mining_threshold    <- "Maximum allowed mining share of total output."
+help_college_coeff       <- "Adjusts modern productivity for human capital spillovers related to the share of workers with a college degree based on Enrico Moretti, *Workers' education, spillovers, and productivity: evidence from plant-level production functions*, American Economic Review, 2004. Moretti obtains estimates between 0.5 and 0.7 in his most flexible specifications (Table 3, column 10)."
+help_mining_filter_active<- "Exclude geographic units whose share of mining in GDP exceeds the threshold below."
+help_mining_threshold    <- "Drops all geographic units with a share of mining in GDP above the chosen level."
 help_se_spec             <- paste(
   "Standard‑error option:",
-  " • Cluster on Instrument – clusters by shared historical instrument.",
-  " • Cluster on State – clusters by modern state.",
-  " • Spatial (Conley (uniform kernel)) – distance‑based correction.",
-  " • Robust – heteroskedasticity‑robust.",
+  " • Cluster by historical instrument – clusters by common historical instrument.",
+  " • Cluster by state – clusters at the modern state level. ",
+  " • Spatial correlation (Conley standard errors) – distance based correction using uniform kernel and a distance cutoff (distance cutoff chosen below).",
+  " • Robust – heteroskedasticity robust standard errors.",
   sep = "\n")
 
 # Spatial standard error settings
-help_spatial_cutoff      <- "Distance in km beyond which spatial correlation is set to zero and uniform kernel with constant weight within cutoff distance."
+help_spatial_cutoff      <- "Distance in km beyond which spatial correlation is set to zero. Uses uniform kernel with constant weight within cutoff distance."
 help_spatial_kernel      <- "Uniform kernel with constant weight within cutoff distance."
 
 # MSA‑specific settings
-help_exclude_multistate_msa  <- "Drop MSAs that cross more than one state."
 help_msa_instrument_type     <- paste(
   "How to construct the historical density instrument:",
-  " • Overlap – maximum density among historical counties with ≥ chosen % overlap with modern MSA.",
+  " Overlap – maximum population density among all historical counties with at least X% of their territory overlapping with the modern geographic unit (X% is chosen below). ",
   sep = "\n")
 help_msa_overlap_pct         <- "Minimum % of a historical county's area that must overlap with the MSA."
 
@@ -98,9 +97,8 @@ help_msa_overlap_pct         <- "Minimum % of a historical county's area that mu
 help_county_msa_restriction  <- "Keep only counties that belong to a modern MSA."
 help_county_instrument_type  <- paste(
   "Historical density instrument construction:",
-  " • Max Density – maximum density among relevant historical counties.",
-  " • Weighted Density – weighted average density of relevant historical counties.",
-  "Use 'Overlap' versions for counties with ≥ threshold % overlap. Use 'Intersect' versions for any overlap.",
+  " • Max density overlap  – maximum population density among all historical counties with at least X% of their territory overlapping with the modern geographic unit (X% is chosen below). ",
+  " • Weighted density overlap – average population density weighted by overlap using all historical counties with at least X% of their territory overlapping with the modern geographic unit (X% is chosen below)",
   sep = "\n")
 help_county_overlap_threshold <- "Minimum % overlap required between historical and modern counties (for Overlap instruments)."
 
@@ -293,8 +291,8 @@ ui <- fluidPage(
                                   labeledInput("fe_type", "Fixed Effects Type:",
                                                selectInput("fe_type", NULL, c("Historical"="historical", "Modern"="modern"), "historical"),
                                                "help_fe_type", help_fe_type)),
-                 labeledInput("sample_scope", "Historical Sample Scope:",
-                              selectInput("sample_scope", NULL, c("States Only"="states_only", "States & Territories"="states_territories"), "states_only"),
+                 labeledInput("sample_scope", "Historical Territory:",
+                              selectInput("sample_scope", NULL, c("Historical States Only "="states_only", "HistoricalStates & Territories"="states_territories"), "states_only"),
                               "help_sample_scope", help_sample_scope),
                  hr(),
                  
@@ -305,17 +303,13 @@ ui <- fluidPage(
                    labeledInput("msa_sectors", "Sector:",
                                 selectInput("msa_sectors", NULL, c("All"=1, "Private"=2, "Manufacturing"=3, "Private non-farm"=4, "Private non-farm/mining"=5), 1),
                                 "help_msa_sectors", help_sectors),
-                   div(class="input-button-row", style="margin-bottom:15px;",
-                       checkboxInput("exclude_multistate_msa", "Exclude multi‑state MSAs", value = TRUE),
-                       actionButton("help_exclude_multistate_msa", NULL, icon=icon("question-circle"), class="help-btn")),
-                   conditionalPanel("input.help_exclude_multistate_msa % 2 == 1", div(class="help-text", help_exclude_multistate_msa)),
-                   labeledInput("msa_sample_year", "Sample Definition Year:",
+                   labeledInput("msa_sample_year", "Year of the Historical Territory:",
                                 selectInput("msa_sample_year", NULL, seq(1790, 1860, 10), 1790),
                                 "help_msa_sample_year", help_sample_year),
-                   labeledInput("msa_iv_year", "Instrument Year:",
+                   labeledInput("msa_iv_year", "Year of the Historical Population Density (Historical Census Year):",
                                 selectInput("msa_iv_year", NULL, seq(1790, 1860, 10), 1840),
                                 "help_msa_iv_year", help_iv_year),
-                   labeledInput("msa_instrument_type", "Instrument Type:",
+                   labeledInput("msa_instrument_type", "Match of Historical to Modern Geographic Units:",
                                 selectInput("msa_instrument_type", NULL, c("overlap")),
                                 "help_msa_instrument_type", help_msa_instrument_type),
                    labeledInput("msa_overlap_pct", "Overlap %:",
@@ -324,7 +318,7 @@ ui <- fluidPage(
                    labeledInput("msa_controls", "Control Variables:",
                                 checkboxGroupInput("msa_controls", NULL, c("Water Access 1820"="water_1820", "Railroads 1840"="railroads_1840", "Railroads 1850"="railroads_1850", "Railroads 1861"="railroads_1861"), c("water_1820", "railroads_1840")),
                                 "help_msa_controls", help_controls),
-                   labeledInput("msa_schooling_adj", "Schooling Adjustment:",
+                   labeledInput("msa_schooling_adj", "Modern Adjustment for Human Capital",
                                 selectInput("msa_schooling_adj", NULL, c("None"=0, "Same Return"=1, "Specific Return"=2, "Run Both"=3), 3),
                                 "help_msa_schooling_adj", help_schooling_adj),
                    div(class="input-button-row", style="margin-bottom:15px;",
@@ -362,13 +356,13 @@ ui <- fluidPage(
                        actionButton("help_county_msa_restriction", NULL, icon=icon("question-circle"), class="help-btn")),
                    conditionalPanel("input.help_county_msa_restriction % 2 == 1", div(class="help-text", help_county_msa_restriction)),
                    labeledInput("county_sample_year", "Sample Definition Year:",
-                                selectInput("county_sample_year", NULL, seq(1790, 1840, 10), 1790),
+                                selectInput("county_sample_year", NULL, seq(1790, 1860, 10), 1790),
                                 "help_county_sample_year", help_sample_year),
                    labeledInput("county_iv_year", "Instrument Year:",
                                 selectInput("county_iv_year", NULL, seq(1790, 1860, 10), 1840),
                                 "help_county_iv_year", help_iv_year),
                    labeledInput("county_instrument_type", "Instrument Type:",
-                                selectInput("county_instrument_type", NULL, c("Max Density Overlap"="max_density_overlap", "Weighted Density Overlap"="weighted_density_overlap", "Max Density Intersect"="max_density_intersect", "Weighted Density Intersect"="weighted_density_intersect"), "max_density_overlap"),
+                                selectInput("county_instrument_type", NULL, c("Max Density Overlap"="max_density_overlap", "Weighted Density Overlap"="weighted_density_overlap"), "max_density_overlap"),
                                 "help_county_instrument_type", help_county_instrument_type),
                    labeledInput("county_overlap_threshold", "Overlap Threshold %:",
                                 selectInput("county_overlap_threshold", NULL, c(5,10,20,30,40,50,60,70,80,90), 5),
@@ -467,7 +461,6 @@ server <- function(input, output, session) {
             se_spec <- input$msa_se_spec
             mining_filter_active <- input$msa_mining_filter_active
             mining_threshold <- safe_numeric(input$msa_mining_threshold, 0.01)
-            exclude_multistate <- input$exclude_multistate_msa
             spatial_cutoff <- safe_numeric(input$msa_spatial_cutoff, 100)
           })
           
@@ -475,12 +468,6 @@ server <- function(input, output, session) {
             filter(year == year_modern) %>%
             rename(lat = lat_DD, lon = lon_DD, state_id = modern_state_fe,
                    avg_schooling = msa_schooling_09, college_share = college_share_09)
-          
-          if (exclude_multistate) {
-            if (!"msaname" %in% names(df)) stop("Error: 'msaname' column required for multi-state MSA filter not found.")
-            df <- df %>%
-              filter(!(str_detect(msaname, ",") & str_detect(str_extract(msaname, ",.*"), "-")))
-          }
           
           # Simplified logic - only overlap for MSA
           sample_col <- glue("MSAol_{sample_year}_{overlap_pct}{suffix}")
@@ -643,18 +630,12 @@ server <- function(input, output, session) {
             }
           }
           
-          if (instrument_type == "weighted_density_intersect") {
-            sample_col <- glue("iv_intersect_{sample_year}{suffix}")
-            instr_col  <- glue("iv_intersect_{iv_year}{suffix}")
-          } else if (instrument_type == "weighted_density_overlap") {
+          if (instrument_type == "weighted_density_overlap") {
             sample_col <- glue("iv_overlap_{overlap_threshold}_{sample_year}{suffix}")
             instr_col  <- glue("iv_overlap_{overlap_threshold}_{iv_year}{suffix}")
           } else if (instrument_type == "max_density_overlap") {
             sample_col <- glue("iv_overlap_max_{overlap_threshold}_{sample_year}{suffix}")
             instr_col  <- glue("iv_overlap_max_{overlap_threshold}_{iv_year}{suffix}")
-          } else if (instrument_type == "max_density_intersect") {
-            sample_col <- glue("iv_overlap_max_any_{sample_year}{suffix}")
-            instr_col  <- glue("iv_overlap_max_any_{iv_year}{suffix}")
           } else {
             stop("Error: Invalid instrument_type for County level specified.")
           }
@@ -801,7 +782,6 @@ server <- function(input, output, session) {
           college_coeff = if(apply_college_adj) college_coeff else NULL,
           mining_filter_active = mining_filter_active,
           mining_threshold = if(mining_filter_active) mining_threshold else NULL,
-          exclude_multistate = if(analysis_level == "MSA") exclude_multistate else NULL,
           county_msa_restriction = if(analysis_level == "County") county_msa_restriction else NULL,
           se_spec = se_spec,
           spatial_cutoff = if(se_spec == "spatial") spatial_cutoff else NULL,
@@ -843,7 +823,7 @@ server <- function(input, output, session) {
         filename <- glue("overlap_{pct}pct_{year}.png")
         subfolder <- glue("{pct}pct")
         map_path <- paste(base_folder, "overlap", subfolder, filename, sep="/")
-        map_title <- glue("Instrument Map: Maximum density among {year} historical counties with {pct}% minimum overlap with modern MSA")
+        map_title <- glue("Instrument Map: Maximum population density among {year} historical counties with {pct}% minimum overlap with modern MSA")
         
       } else { # County Logic
         type <- input$county_instrument_type
@@ -851,15 +831,11 @@ server <- function(input, output, session) {
         pct <- input$county_overlap_threshold
         base_folder <- paste("www", "County Maps", scope_folder, sep="/")
         
-        if (type == "max_density_intersect") {
-          filename <- glue("max_intersect_{year}.png")
-          map_path <- paste(base_folder, "max_intersect", filename, sep="/")
-          map_title <- glue("Instrument Map: Maximum density among {year} historical counties with any overlap with modern county")
-        } else if (type == "max_density_overlap") {
+        if (type == "max_density_overlap") {
           filename <- glue("max_overlap_{pct}pct_{year}.png")
           subfolder <- glue("{pct}pct")
           map_path <- paste(base_folder, "max_overlap", subfolder, filename, sep="/")
-          map_title <- glue("Instrument Map: Maximum density among {year} historical counties with {pct}% minimum overlap with modern county")
+          map_title <- glue("Instrument Map: Maximum population density among {year} historical counties with {pct}% minimum overlap with modern county")
         }
       }
       
@@ -1029,7 +1005,62 @@ server <- function(input, output, session) {
           return(paste0('<td class="stats">—</td>'))
         })
       }), collapse = "")
-      html_parts <- c(html_parts, paste0('<tr><td class="row-label stats">First-Stage F-Stat</td>', fstat_cells, '</tr>'))
+      html_parts <- c(html_parts, paste0('<tr><td class="row-label stats">First-Stage F-Statistic</td>', fstat_cells, '</tr>'))
+    }
+    
+    # Add F-Statistic and T-Statistic for First-stage Regression
+    if (analysis_type == "First-stage Regression") {
+      # Overall F-Statistic - use same method that works for IV regressions
+      fstat_cells <- paste(sapply(models, function(m) {
+        tryCatch({
+          # Use the same method that works for IV first-stage models
+          fstat_info <- fitstat(m, type = "ivf")
+          if (!is.null(fstat_info) && "stat" %in% names(fstat_info)) {
+            fstat_value <- sprintf("%.2f", fstat_info$stat)
+            return(paste0('<td class="stats">', fstat_value, '</td>'))
+          }
+          
+          # Fallback: Manual calculation using first-stage coefficient
+          coefs <- coef(m)
+          ses <- se(m)
+          if ("instrument" %in% names(coefs)) {
+            coef_instr <- coefs["instrument"]
+            se_instr <- ses["instrument"]
+            if (!is.na(coef_instr) && !is.na(se_instr) && se_instr != 0) {
+              fstat_value <- (coef_instr / se_instr)^2
+              fstat_value <- sprintf("%.2f", fstat_value)
+              return(paste0('<td class="stats">', fstat_value, '</td>'))
+            }
+          }
+          
+          return(paste0('<td class="stats">—</td>'))
+          
+        }, error = function(e) {
+          return(paste0('<td class="stats">—</td>'))
+        })
+      }), collapse = "")
+      html_parts <- c(html_parts, paste0('<tr><td class="row-label stats">F-Statistic</td>', fstat_cells, '</tr>'))
+      
+      # T-Statistic for instrument
+      tstat_cells <- paste(sapply(models, function(m) {
+        tryCatch({
+          coefs <- coef(m)
+          ses <- se(m)
+          if ("instrument" %in% names(coefs)) {
+            coef_instr <- coefs["instrument"]
+            se_instr <- ses["instrument"]
+            if (!is.na(coef_instr) && !is.na(se_instr) && se_instr != 0) {
+              tstat_value <- coef_instr / se_instr
+              tstat_value <- sprintf("%.2f", tstat_value)
+              return(paste0('<td class="stats">', tstat_value, '</td>'))
+            }
+          }
+          return(paste0('<td class="stats">—</td>'))
+        }, error = function(e) {
+          return(paste0('<td class="stats">—</td>'))
+        })
+      }), collapse = "")
+      html_parts <- c(html_parts, paste0('<tr><td class="row-label stats">T-Statistic (Instrument)</td>', tstat_cells, '</tr>'))
     }
     
     # Add cluster information if relevant
@@ -1052,7 +1083,10 @@ server <- function(input, output, session) {
     # Add significance notes in LaTeX style
     note_text <- 'Notes: Standard errors in parentheses. *** p&lt;0.01, ** p&lt;0.05, * p&lt;0.1'
     if (analysis_type == "IV") {
-      note_text <- paste0(note_text, '. First-Stage F-Stat tests instrument strength (F &gt; 10 indicates strong instrument).')
+      note_text <- paste0(note_text, '. First-Stage F-Statistic tests instrument strength (F &gt; 10 indicates strong instrument).')
+    }
+    if (analysis_type == "First-stage Regression") {
+      note_text <- paste0(note_text, '. F-Statistic tests overall significance of the regression. T-Statistic tests significance of the instrument.')
     }
     if (se_spec == "spatial") {
       note_text <- paste0(note_text, '. Spatial standard errors computed using uniform kernel.')
@@ -1126,8 +1160,6 @@ server <- function(input, output, session) {
         switch(instr_type,
                "max_density_overlap" = "Max Density Overlap",
                "weighted_density_overlap" = "Weighted Density Overlap", 
-               "max_density_intersect" = "Max Density Intersect",
-               "weighted_density_intersect" = "Weighted Density Intersect",
                instr_type)
       }
     }
@@ -1160,11 +1192,11 @@ server <- function(input, output, session) {
     
     # Sample and Instrument Settings  
     detail_sections$sample <- paste0(
-      '<strong>Sample Definition Year:</strong> ', details$sample_year, '<br>',
-      '<strong>Instrument Year:</strong> ', details$iv_year, '<br>',
-      '<strong>Instrument Type:</strong> ', get_instrument_name(details$instrument_type, details$analysis_level),
+      '<strong> Year of the Historical Territory:</strong> ', details$sample_year, '<br>',
+      '<strong>Year of the Historical Population Density (Historical Census Year):</strong> ', details$iv_year, '<br>',
+      '<strong>Match of Historical to Modern Geographic Units:</strong> ', get_instrument_name(details$instrument_type, details$analysis_level),
       if (!is.null(details$overlap_pct)) paste0(' (', details$overlap_pct, '% overlap)') else '', '<br>',
-      '<strong>Sample Scope:</strong> ', details$sample_scope, '<br>'
+      '<strong>Historical Territory::</strong> ', details$sample_scope, '<br>'
     )
     
     # Fixed Effects and Controls
@@ -1174,26 +1206,23 @@ server <- function(input, output, session) {
     )
     
     # Adjustments
-    adjustment_text <- paste0('<strong>Schooling Adjustment:</strong> ', get_schooling_adj_name(details$schooling_adj))
+    adjustment_text <- paste0('<strong> Modern Adjustment for Human Capital::</strong> ', get_schooling_adj_name(details$schooling_adj))
     if (details$apply_college_adj && !is.null(details$college_coeff)) {
       college_coeff_formatted <- sprintf("%.2f", as.numeric(details$college_coeff))
-      adjustment_text <- paste0(adjustment_text, '<br><strong>College Share Adjustment:</strong> Yes (coefficient = ', college_coeff_formatted, ' - Moretti (AER. 2004) estimates between 0.5 and 0.7.)')
+      adjustment_text <- paste0(adjustment_text, '<br><strong>College Share Adjustment:</strong> Yes (coefficient = ', college_coeff_formatted, ' - Based on Moretti (2004)')
     } else {
       adjustment_text <- paste0(adjustment_text, '<br><strong>College Share Adjustment:</strong> No')
     }
     if (details$mining_filter_active && !is.null(details$mining_threshold)) {
       mining_threshold_formatted <- sprintf("%.3f", as.numeric(details$mining_threshold))
-      adjustment_text <- paste0(adjustment_text, '<br><strong>Mining Filter:</strong> Yes (max share = ', mining_threshold_formatted, ')')
+      adjustment_text <- paste0(adjustment_text, '<br><strong>Max Mining Share::</strong> Yes (max share = ', mining_threshold_formatted, ')')
     } else {
-      adjustment_text <- paste0(adjustment_text, '<br><strong>Mining Filter:</strong> No')
+      adjustment_text <- paste0(adjustment_text, '<br><strong>Max Mining Share::</strong> No')
     }
     detail_sections$adjustments <- paste0(adjustment_text, '<br>')
     
     # Level-specific settings
-    if (details$analysis_level == "MSA" && !is.null(details$exclude_multistate)) {
-      detail_sections$level_specific <- paste0('<strong>Exclude Multi-state MSAs:</strong> ', 
-                                               if(details$exclude_multistate) "Yes" else "No", '<br>')
-    } else if (details$analysis_level == "County" && !is.null(details$county_msa_restriction)) {
+    if (details$analysis_level == "County" && !is.null(details$county_msa_restriction)) {
       detail_sections$level_specific <- paste0('<strong>Restrict to MSA Counties:</strong> ', 
                                                if(details$county_msa_restriction) "Yes" else "No", '<br>')
     }

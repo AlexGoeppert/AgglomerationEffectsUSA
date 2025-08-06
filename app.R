@@ -100,7 +100,7 @@ help_county_instrument_type  <- paste(
   " • Max density overlap  – maximum population density among all historical counties with at least X% of their territory overlapping with the modern geographic unit (X% is chosen below). ",
   " • Weighted density overlap – average population density weighted by overlap using all historical counties with at least X% of their territory overlapping with the modern geographic unit (X% is chosen below)",
   sep = "\n")
-help_county_overlap_threshold <- "Minimum % overlap required between historical and modern counties (for Overlap instruments)."
+help_county_overlap_threshold <- "Minimum % of a historical county's area that must overlap with the modern county"
 
 # --- Helper for labelled inputs ----------------------------------------------
 

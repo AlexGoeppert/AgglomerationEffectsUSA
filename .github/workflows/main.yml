@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     
     container:
-      image: rocker/shiny-verse:latest
+      image: rocker/shiny-verse:4.5.3
       
     env:
       CXXFLAGS: "-Wno-error=format-security"
@@ -28,12 +28,12 @@ jobs:
 
       - name: Install R Dependencies
         run: |
-          R -e "install.packages(c('shiny', 'fixest', 'dplyr', 'haven', 'glue', 'stringr', 'shinycssloaders', 'DT', 'rsconnect'))"
+          R -e "install.packages(c('shiny', 'fixest', 'dplyr', 'haven', 'glue', 'stringr', 'shinycssloaders', 'DT', 'ggplot2', 'rsconnect'), repos = 'https://cloud.r-project.org')"
 
       - name: Create .rscignore file
         run: echo "renv.lock" > .rscignore
 
       - name: Deploy to shinyapps.io
         run: |
-          R -e "options(rsconnect.max.bundle.size = 5 * 1024^3); rsconnect::setAccountInfo(name = 'agoepper', token = '${{ secrets.SHINYAPPS_TOKEN }}', secret = '${{ secrets.SHINYAPPS_SECRET }}'); rsconnect::deployApp(appName = 'AgglomerationEffectsUSA', forceUpdate = TRUE)"
+          R -e "options(rsconnect.max.bundle.size = 5 * 1024^3); rsconnect::setAccountInfo(name = 'agoepper', token = '${{ secrets.SHINYAPPS_TOKEN }}', secret = '${{ secrets.SHINYAPPS_SECRET }}'); rsconnect::deployApp(appName = 'AgglomerationEffectsUSA', forceUpdate = TRUE, dependencyResolution = 'library')"
 

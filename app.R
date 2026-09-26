@@ -89,8 +89,10 @@ help_spatial_kernel      <- "Uniform kernel with constant weight within cutoff d
 
 # MSA‑specific settings
 help_msa_instrument_type     <- paste(
-  "How to construct the historical density instrument:",
+  "How to construct the historical instrument:",
   " Overlap – maximum population density among all historical counties with at least X% of their territory overlapping with the modern geographic unit (X% is chosen below). ",
+  " Glaeser and Gottlieb (2009) – aggregate historical county populations to MSAs and use the natural log of the total population. Here, whole historical counties are matched to the project's current MSA county list and their populations are added: ln(sum of population). We use the selected historical year, without area-overlap weights. Zero or unknown totals have no log value.",
+  " The paper's Data Appendix describes county-to-MSA aggregation, and the archived JEL Table 4 code confirms log population. The historical county matching is reconstructed from the surviving data and code; their complete matching script is unavailable.",
   sep = "\n")
 help_msa_overlap_pct         <- "Minimum % of a historical county's area that must overlap with the MSA."
 
@@ -152,8 +154,6 @@ resolve_geo_controls <- function(geo_groups = character(), water_groups = charac
 is_county_population <- function(details) {
   identical(details$analysis_level, "MSA") && identical(details$instrument_type, "county_population")
 }
-
-county_population_note <- "Historical county populations are matched to the project's current MSA county list and summed. The instrument is the natural log of that total."
 
 instrument_name <- function(type) {
   switch(type, county_population = "Glaeser and Gottlieb (2009), county aggregation",
@@ -674,8 +674,6 @@ ui <- fluidPage(title = "Agglomeration Effects USA",
                                 selectInput("msa_instrument_type", NULL,
                                   c("overlap" = "overlap", "Glaeser and Gottlieb (2009)" = "county_population"), "overlap"),
                                 "help_msa_instrument_type", help_msa_instrument_type),
-                   conditionalPanel("input.msa_instrument_type == 'county_population'",
-                     p(class = "help-block", county_population_note)),
                    conditionalPanel("input.msa_instrument_type == 'overlap'",
                    labeledInput("msa_overlap_pct", "Overlap %:",
                                 selectInput("msa_overlap_pct", NULL, c(5,10,20,30,40,50,60,70,80,90), 5),

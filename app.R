@@ -149,7 +149,21 @@ resolve_geo_controls <- function(geo_groups = character(), water_groups = charac
   unique(unname(unlist(c(land[geo_groups], water[water_groups]), use.names = FALSE)))
 }
 
-control_label <- function(variable) {
+is_county_population <- function(details) {
+  identical(details$analysis_level, "MSA") && identical(details$instrument_type, "county_population")
+}
+
+county_population_note <- "Historical county populations are matched to the project's current MSA county list and summed. This option changes the aggregation only."
+
+instrument_name <- function(type) {
+  switch(type, county_population = "Glaeser and Gottlieb (2009), county aggregation",
+    overlap = "Overlap", max_density_overlap = "Max Density Overlap",
+    weighted_density_overlap = "Weighted Density Overlap", type)
+}
+
+control_label <- function(variable, instrument_type = NULL) {
+  if (variable == "instrument" && identical(instrument_type, "county_population"))
+    return("Historical population (people)")
   if (variable == "ch_elasticity") return("Ciccone–Hall elasticity (theta − 1)")
   labels <- c(fit_RHS = "Log employment density (instrumented)", RHS = "Log employment density",
               instrument = "Historical density instrument", `(Intercept)` = "Constant",
@@ -374,7 +388,7 @@ model_coefficients <- function(details) {
     interval <- stats::confint(model, level = .95)
     terms <- rownames(table)
     data.frame(model = model_name, term = terms,
-               label = vapply(terms, control_label, character(1)),
+               label = vapply(terms, control_label, character(1), instrument_type = details$instrument_type),
                estimate = table[, 1], std_error = table[, 2],
                statistic = table[, 3], p_value = table[, 4],
                conf_low = interval[terms, 1], conf_high = interval[terms, 2],
@@ -403,7 +417,9 @@ result_plot <- function(details) {
     ggplot2::geom_point(color = "#000000", fill = "#ffffff", shape = 21, size = 4.5, stroke = 1.6) +
     ggplot2::scale_y_discrete(expand = ggplot2::expansion(add = .65)) +
     ggplot2::scale_x_continuous(expand = ggplot2::expansion(mult = .12)) +
-    ggplot2::labs(x = if (details$analysis_type == "First-stage Regression") "Historical density coefficient" else if (identical(details$density_measure, "CH")) "Ciccone–Hall elasticity (theta − 1)" else "Employment density coefficient",
+    ggplot2::labs(x = if (details$analysis_type == "First-stage Regression") {
+                    if (is_county_population(details)) "Historical population coefficient (per person)" else "Historical density coefficient"
+                  } else if (identical(details$density_measure, "CH")) "Ciccone–Hall elasticity (theta − 1)" else "Employment density coefficient",
                   y = NULL, title = paste(details$analysis_level, "·", details$year_modern, "·", model_description(details)),
                   subtitle = "Point estimates and 95% confidence intervals",
                   caption = "Intervals use the selected standard-error specification.") +
@@ -651,15 +667,19 @@ ui <- fluidPage(title = "Agglomeration Effects USA",
                    labeledInput("msa_sample_year", "Year of the Historical Territory:",
                                 selectInput("msa_sample_year", NULL, seq(1790, 1860, 10), 1790),
                                 "help_msa_sample_year", help_sample_year),
-                   labeledInput("msa_iv_year", "Year of the Historical Population Density (Historical Census Year):",
+                   labeledInput("msa_iv_year", textOutput("msa_iv_year_label", inline = TRUE),
                                 selectInput("msa_iv_year", NULL, seq(1790, 1860, 10), 1840),
                                 "help_msa_iv_year", help_iv_year),
                    labeledInput("msa_instrument_type", "Match of Historical to Modern Geographic Units:",
-                                selectInput("msa_instrument_type", NULL, c("overlap")),
+                                selectInput("msa_instrument_type", NULL,
+                                  c("overlap" = "overlap", "Glaeser and Gottlieb (2009)" = "county_population"), "overlap"),
                                 "help_msa_instrument_type", help_msa_instrument_type),
+                   conditionalPanel("input.msa_instrument_type == 'county_population'",
+                     p(class = "help-block", county_population_note)),
+                   conditionalPanel("input.msa_instrument_type == 'overlap'",
                    labeledInput("msa_overlap_pct", "Overlap %:",
                                 selectInput("msa_overlap_pct", NULL, c(5,10,20,30,40,50,60,70,80,90), 5),
-                                "help_msa_overlap_pct", help_msa_overlap_pct),
+                                "help_msa_overlap_pct", help_msa_overlap_pct)),
                    labeledInput("msa_controls", "Control Variables:",
                                 checkboxGroupInput("msa_controls", NULL, c("Water Access 1820"="water_1820", "Railroads 1840"="railroads_1840", "Railroads 1850"="railroads_1850", "Railroads 1861"="railroads_1861"), c("water_1820", "railroads_1840")),
                                 "help_msa_controls", help_controls),
@@ -788,7 +808,13 @@ server <- function(input, output, session) {
   analysis_output <- reactiveVal(NULL)
   map_output <- reactiveVal(NULL)
 
-  observeEvent(list(input$msa_density_measure, input$analysis_level), {
+  output$msa_iv_year_label <- renderText({
+    if (identical(input$msa_instrument_type, "county_population"))
+      "Year of the Historical Population (Historical Census Year):"
+    else "Year of the Historical Population Density (Historical Census Year):"
+  })
+
+  observeEvent(list(input$msa_density_measure, input$analysis_level, input$msa_instrument_type), {
     ch <- identical(input$analysis_level, "MSA") && identical(input$msa_density_measure, "CH")
     methods <- if (ch) c("IV", "OLS") else c("IV", "OLS", "First-stage Regression")
     selected <- isolate(input$analysis_type)
@@ -796,6 +822,7 @@ server <- function(input, output, session) {
     updateSelectInput(session, "analysis_type", choices = methods, selected = selected)
     standard_errors <- c("Cluster on Instrument" = "cluster_instrument",
       "Cluster on State" = "cluster_state", "Spatial (Conley)" = "spatial", "Robust" = "robust")
+    if (identical(input$msa_instrument_type, "county_population")) names(standard_errors)[1] <- "Cluster on MSA"
     if (ch) standard_errors <- standard_errors[standard_errors != "spatial"]
     selected_se <- isolate(input$msa_se_spec)
     if (is.null(selected_se) || !selected_se %in% standard_errors) selected_se <- "cluster_instrument"
@@ -868,12 +895,17 @@ server <- function(input, output, session) {
             rename(lat = lat_DD, lon = lon_DD, state_id = modern_state_fe,
                    avg_schooling = msa_schooling_09, college_share = college_share_09)
           
-          # Simplified logic - only overlap for MSA
-          sample_col <- glue("MSAol_{sample_year}_{overlap_pct}{suffix}")
-          instr_col  <- glue("MSAol_{iv_year}_{overlap_pct}{suffix}")
+          if (instrument_type == "county_population") {
+            sample_col <- glue("GGpop_{sample_year}{suffix}")
+            instr_col <- glue("GGpop_{iv_year}{suffix}")
+            overlap_pct <- NULL
+          } else if (instrument_type == "overlap") {
+            sample_col <- glue("MSAol_{sample_year}_{overlap_pct}{suffix}")
+            instr_col <- glue("MSAol_{iv_year}_{overlap_pct}{suffix}")
+          } else stop("Choose a supported MSA instrument construction.")
           
           # Apply territory filtering for states-only analysis
-          if (sample_scope == "states_only") {
+          if (sample_scope == "states_only" && instrument_type != "county_population") {
             fe_var_name_full <- glue("hist_state_fe_{iv_year}")  # without _s suffix
             
             # Try to find MSA identifier column
@@ -1072,10 +1104,15 @@ server <- function(input, output, session) {
         
         df <- df %>% mutate(across(all_of(c(sample_col, instr_col)), as.numeric))
         df <- df %>%
-          mutate(.sample_iv = .data[[sample_col]], instrument = .data[[instr_col]]) %>%
-          filter(!is.na(.sample_iv) & !is.na(instrument)) %>%
-          select(-.sample_iv)
-        df$clusterID <- as.integer(as.factor(df$instrument))
+          mutate(.sample_iv = .data[[sample_col]], instrument = .data[[instr_col]])
+        if (analysis_level == "MSA" && instrument_type == "county_population") {
+          df <- df %>% filter(is.finite(.sample_iv) & .sample_iv >= 0 & is.finite(instrument) & instrument >= 0)
+        } else df <- df %>% filter(!is.na(.sample_iv) & !is.na(instrument))
+        df <- df %>% select(-.sample_iv)
+        if (analysis_level == "MSA" && instrument_type == "county_population") {
+          if (!"msafips" %in% names(df)) stop("MSA identifiers are required for the county-matched population instrument.")
+          df$clusterID <- as.integer(as.factor(df$msafips))
+        } else df$clusterID <- as.integer(as.factor(df$instrument))
         if (apply_college_adj) {
           if (!"college_share" %in% names(df)) stop("Error: 'college_share' column not found.")
           df <- df %>% mutate(LHS = LHS - college_coeff * college_share)
@@ -1210,7 +1247,7 @@ server <- function(input, output, session) {
           sectors = sectors,
           sample_year = sample_year,
           iv_year = iv_year,
-          instrument_type = if(analysis_level == "MSA") instrument_type else instrument_type,
+          instrument_type = instrument_type,
           overlap_pct = if(analysis_level == "MSA") overlap_pct else overlap_threshold,
           schooling_adj = schooling_adj,
           apply_college_adj = apply_college_adj,
@@ -1258,7 +1295,9 @@ server <- function(input, output, session) {
       map_path <- NULL
       map_title <- "Instrument Map: Historical density instrument map not available for the selected settings."
       
-      if (level == "MSA") {
+      if (level == "MSA" && identical(input$msa_instrument_type, "county_population")) {
+        map_title <- "Instrument Map: Historical MSA population"
+      } else if (level == "MSA") {
         year <- input$msa_iv_year
         pct <- input$msa_overlap_pct
         base_folder <- paste("www", "MSA Maps", scope_folder, sep="/")
@@ -1283,7 +1322,9 @@ server <- function(input, output, session) {
         }
       }
       
-      map_output(list(src = map_path, title = map_title))
+      map_output(list(src = map_path, title = map_title,
+        message = if (level == "MSA" && identical(input$msa_instrument_type, "county_population"))
+          "A map is not available for the county-matched population instrument." else NULL))
     })
   })
   
@@ -1306,7 +1347,7 @@ server <- function(input, output, session) {
   create_professional_table <- function(models, analysis_type, se_spec = NULL, cluster_data = NULL,
                                         first_stage_models = NULL, data_for_fs = NULL,
                                         controls_vec = NULL, fe_part = NULL, vcov_arg = NULL,
-                                        model_clusters = NULL) {
+                                        model_clusters = NULL, instrument_type = NULL) {
     if (!length(models)) return("")
     escape <- function(x) as.character(htmltools::htmlEscape(x))
     model_names <- names(models)
@@ -1325,15 +1366,20 @@ server <- function(input, output, session) {
                paste0('<thead><tr><th class="row-label">Variable</th>',
                       paste0('<th>', escape(model_names), '</th>', collapse = ""), '</tr></thead><tbody>'))
     for (variable in ordered_vars) {
+      format_value <- function(value) {
+        if (identical(instrument_type, "county_population") && variable == "instrument" &&
+            is.finite(value) && value != 0 && abs(value) < 0.00005) return(sprintf("%.3e", value))
+        format_estimate(value)
+      }
       estimates <- vapply(models, function(model) {
         if (!variable %in% names(coef(model))) return("—")
-        paste0(format_estimate(coef(model)[variable]), get_significance_stars(app_model_pvalue(model)[variable]))
+        paste0(format_value(coef(model)[variable]), get_significance_stars(app_model_pvalue(model)[variable]))
       }, character(1))
       uncertainties <- vapply(models, function(model) {
         if (!variable %in% names(coef(model))) return("")
-        paste0("(", format_estimate(app_model_se(model)[variable]), ")")
+        paste0("(", format_value(app_model_se(model)[variable]), ")")
       }, character(1))
-      parts <- c(parts, row(control_label(variable), estimates, "coefficient"), row("", uncertainties, "se"))
+      parts <- c(parts, row(control_label(variable, instrument_type), estimates, "coefficient"), row("", uncertainties, "se"))
     }
     parts <- c(parts, row("Observations", vapply(models, function(model) format(nobs(model), big.mark = ","), character(1)), row_class = "top-border"))
     diagnostic_models <- if (analysis_type == "IV") first_stage_models else if (analysis_type == "First-stage Regression") models else NULL
@@ -1345,11 +1391,15 @@ server <- function(input, output, session) {
       parts <- c(parts, row("Instrument Wald F", fstats))
     }
     if (!is.null(model_clusters) && any(!is.na(model_clusters))) {
-      label <- if (se_spec == "cluster_instrument") "Instrument clusters" else "State clusters"
+      label <- if (se_spec == "cluster_instrument") {
+        if (identical(instrument_type, "county_population")) "MSA clusters" else "Instrument clusters"
+      } else "State clusters"
       parts <- c(parts, row(label, ifelse(is.na(model_clusters), "—", model_clusters)))
     }
     parts <- c(parts, '</tbody></table></div>')
     note <- 'Standard errors in parentheses. *** p&lt;0.01, ** p&lt;0.05, * p&lt;0.1.'
+    if (identical(instrument_type, "county_population"))
+      note <- paste0(note, ' The historical population instrument is measured in people and used in levels.')
     if (length(diagnostic_models)) {
       note <- paste0(note, ' Instrument Wald F is the squared t statistic for the excluded instrument, using the selected standard errors and the model sample.')
     }
@@ -1390,7 +1440,8 @@ server <- function(input, output, session) {
         controls_vec = details$controls_vec,
         fe_part = details$fe_part,
         vcov_arg = details$vcov_arg,
-        model_clusters = details$model_clusters
+        model_clusters = details$model_clusters,
+        instrument_type = details$instrument_type
       ))
     }
   })
@@ -1417,24 +1468,10 @@ server <- function(input, output, session) {
       return(adj_names[as.character(adj_num)])
     }
     
-    # Helper function to format instrument type
-    get_instrument_name <- function(instr_type, level) {
-      if (level == "MSA") {
-        switch(instr_type,
-               "overlap" = "Overlap",
-               instr_type)
-      } else {
-        switch(instr_type,
-               "max_density_overlap" = "Max Density Overlap",
-               "weighted_density_overlap" = "Weighted Density Overlap", 
-               instr_type)
-      }
-    }
-    
     # Build comprehensive analysis details
     se_description <- details$se_spec
     if (details$se_spec == "cluster_instrument" && !is.null(details$cluster_data$clusterID)) {
-      se_description <- "Cluster on historical instrument"
+      se_description <- if (is_county_population(details)) "Cluster on MSA" else "Cluster on historical instrument"
     } else if (details$se_spec == "cluster_state" && !is.null(details$cluster_data$state_id)) {
       se_description <- "Cluster on modern state"
     } else if (details$se_spec == "spatial") {
@@ -1458,10 +1495,11 @@ server <- function(input, output, session) {
     # Sample and Instrument Settings  
     detail_sections$sample <- paste0(
       '<strong> Year of the Historical Territory:</strong> ', details$sample_year, '<br>',
-      '<strong>Year of the Historical Population Density (Historical Census Year):</strong> ', details$iv_year, '<br>',
-      '<strong>Match of Historical to Modern Geographic Units:</strong> ', get_instrument_name(details$instrument_type, details$analysis_level),
+      '<strong>', if (is_county_population(details)) 'Year of the Historical Population (Historical Census Year):' else 'Year of the Historical Population Density (Historical Census Year):', '</strong> ', details$iv_year, '<br>',
+      '<strong>Match of Historical to Modern Geographic Units:</strong> ', instrument_name(details$instrument_type),
       if (!is.null(details$overlap_pct)) paste0(' (', details$overlap_pct, '% overlap)') else '', '<br>',
-      '<strong>Historical territory:</strong> ', details$sample_scope, '<br>'
+      '<strong>Historical territory:</strong> ', details$sample_scope, '<br>',
+      if (is_county_population(details)) '<strong>Instrument units:</strong> People, in levels<br>' else ''
     )
     
     # Fixed Effects and Controls
@@ -1525,7 +1563,7 @@ server <- function(input, output, session) {
       imageOutput("instrument_map_render", width = paste0(input$map_size, "%"), height = "auto")
     } else {
       div(class = "help-text",
-          "Map image not found. Please check your selections and verify your file structure in the 'www' folder.")
+          if (!is.null(info$message)) info$message else "Map image not found. Please check your selections and verify your file structure in the 'www' folder.")
     }
   })
   
@@ -1566,9 +1604,13 @@ server <- function(input, output, session) {
     sample_text <- if (length(unique(n)) == 1) format(n[1], big.mark = ",") else paste(format(range(n), big.mark = ","), collapse = "–")
     metric <- function(label, value, note) div(class = "metric-card", div(class = "metric-label", label), div(class = "metric-value", value), div(class = "metric-detail", note))
     tagList(div(class = "metric-grid",
-      metric(if (identical(details$density_measure, "CH")) "Ciccone–Hall elasticity" else "Density coefficient", if (nrow(primary)) sprintf("%.3f", primary$estimate[1]) else "Unavailable",
+      metric(if (details$analysis_type == "First-stage Regression" && is_county_population(details)) "Population coefficient" else if (identical(details$density_measure, "CH")) "Ciccone–Hall elasticity" else "Density coefficient", if (nrow(primary)) {
+               if (details$analysis_type == "First-stage Regression" && is_county_population(details)) format(primary$estimate[1], digits = 4) else sprintf("%.3f", primary$estimate[1])
+             } else "Unavailable",
              if (nrow(primary)) primary$model[1] else "Not identified in this sample"),
-      metric("95% interval", if (nrow(primary)) sprintf("%.3f to %.3f", primary$conf_low[1], primary$conf_high[1]) else "—", "Using the chosen standard errors"),
+      metric("95% interval", if (nrow(primary)) {
+        if (details$analysis_type == "First-stage Regression" && is_county_population(details)) paste(format(primary$conf_low[1], digits = 4), "to", format(primary$conf_high[1], digits = 4)) else sprintf("%.3f to %.3f", primary$conf_low[1], primary$conf_high[1])
+      } else "—", "Using the chosen standard errors"),
       metric("Observations", sample_text, paste(length(details$models), if (length(details$models) == 1) "model" else "models")),
       metric("Modern year", as.character(details$year_modern), paste(details$analysis_level, "·", model_description(details)))),
       div(class = "estimate-caption", "The chart compares the selected schooling adjustments. The table contains every estimated coefficient."))
@@ -1616,10 +1658,13 @@ server <- function(input, output, session) {
       table <- model_coefficients(details)
       table$controls <- paste(details$controls_vec, collapse = "; ")
       table$water_year <- details$water_year
-      table$standard_errors <- details$se_spec
+      table$standard_errors <- if (is_county_population(details) && details$se_spec == "cluster_instrument") "Cluster on MSA" else details$se_spec
       table$fixed_effects <- details$fe_type
       table$sample_year <- details$sample_year
       table$instrument_year <- details$iv_year
+      table$instrument_construction <- instrument_name(details$instrument_type)
+      if (is_county_population(details)) table$instrument_units <- "People, in levels"
+      if (!is.null(details$overlap_pct)) table$overlap_threshold_pct <- details$overlap_pct
       utils::write.csv(table, file, row.names = FALSE, na = "")
     })
 
@@ -1637,14 +1682,15 @@ server <- function(input, output, session) {
       chart_data <- base64enc::dataURI(file = chart_file, mime = "image/png")
       table <- create_professional_table(details$models, details$analysis_type, details$se_spec,
         details$cluster_data, details$first_stage_models, details$data_for_fs, details$controls_vec, details$fe_part, details$vcov_arg,
-        model_clusters = details$model_clusters)
+        model_clusters = details$model_clusters, instrument_type = details$instrument_type)
       esc <- htmltools::htmlEscape
       specifications <- c(Geography = details$analysis_level, Method = model_description(details), `Modern year` = details$year_modern,
         Sector = c("All", "Private", "Manufacturing", "Private non-farm", "Private non-farm/mining")[details$sectors],
         `Historical sample year` = details$sample_year, `Instrument year` = details$iv_year,
-        `Historical territory` = details$sample_scope, `Instrument construction` = details$instrument_type,
+        `Historical territory` = details$sample_scope, `Instrument construction` = instrument_name(details$instrument_type),
+        `Instrument units` = if (is_county_population(details)) "People, in levels" else NULL,
         `Overlap threshold (%)` = details$overlap_pct, `State fixed effects` = details$fe_type,
-        `Standard errors` = details$se_spec, `Schooling adjustment` = details$schooling_adj,
+        `Standard errors` = if (is_county_population(details) && details$se_spec == "cluster_instrument") "Cluster on MSA" else details$se_spec, `Schooling adjustment` = details$schooling_adj,
         `College adjustment` = if (details$apply_college_adj) details$college_coeff else "None",
         `Mining threshold` = if (details$mining_filter_active) details$mining_threshold else "None",
         `Spatial cutoff (km)` = if (details$se_spec == "spatial") details$spatial_cutoff else "Not used",

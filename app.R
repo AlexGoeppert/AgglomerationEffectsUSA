@@ -153,7 +153,7 @@ is_county_population <- function(details) {
   identical(details$analysis_level, "MSA") && identical(details$instrument_type, "county_population")
 }
 
-county_population_note <- "Historical county populations are matched to the project's current MSA county list and summed. This option changes the aggregation only."
+county_population_note <- "Historical county populations are matched to the project's current MSA county list and summed. The instrument is the natural log of that total."
 
 instrument_name <- function(type) {
   switch(type, county_population = "Glaeser and Gottlieb (2009), county aggregation",
@@ -163,7 +163,7 @@ instrument_name <- function(type) {
 
 control_label <- function(variable, instrument_type = NULL) {
   if (variable == "instrument" && identical(instrument_type, "county_population"))
-    return("Historical population (people)")
+    return("Log historical population")
   if (variable == "ch_elasticity") return("Ciccone–Hall elasticity (theta − 1)")
   labels <- c(fit_RHS = "Log employment density (instrumented)", RHS = "Log employment density",
               instrument = "Historical density instrument", `(Intercept)` = "Constant",
@@ -418,7 +418,7 @@ result_plot <- function(details) {
     ggplot2::scale_y_discrete(expand = ggplot2::expansion(add = .65)) +
     ggplot2::scale_x_continuous(expand = ggplot2::expansion(mult = .12)) +
     ggplot2::labs(x = if (details$analysis_type == "First-stage Regression") {
-                    if (is_county_population(details)) "Historical population coefficient (per person)" else "Historical density coefficient"
+                    if (is_county_population(details)) "Log historical population coefficient" else "Historical density coefficient"
                   } else if (identical(details$density_measure, "CH")) "Ciccone–Hall elasticity (theta − 1)" else "Employment density coefficient",
                   y = NULL, title = paste(details$analysis_level, "·", details$year_modern, "·", model_description(details)),
                   subtitle = "Point estimates and 95% confidence intervals",
@@ -896,8 +896,8 @@ server <- function(input, output, session) {
                    avg_schooling = msa_schooling_09, college_share = college_share_09)
           
           if (instrument_type == "county_population") {
-            sample_col <- glue("GGpop_{sample_year}{suffix}")
-            instr_col <- glue("GGpop_{iv_year}{suffix}")
+            sample_col <- glue("GGlnpop_{sample_year}{suffix}")
+            instr_col <- glue("GGlnpop_{iv_year}{suffix}")
             overlap_pct <- NULL
           } else if (instrument_type == "overlap") {
             sample_col <- glue("MSAol_{sample_year}_{overlap_pct}{suffix}")
@@ -1106,11 +1106,11 @@ server <- function(input, output, session) {
         df <- df %>%
           mutate(.sample_iv = .data[[sample_col]], instrument = .data[[instr_col]])
         if (analysis_level == "MSA" && instrument_type == "county_population") {
-          df <- df %>% filter(is.finite(.sample_iv) & .sample_iv >= 0 & is.finite(instrument) & instrument >= 0)
+          df <- df %>% filter(is.finite(.sample_iv) & is.finite(instrument))
         } else df <- df %>% filter(!is.na(.sample_iv) & !is.na(instrument))
         df <- df %>% select(-.sample_iv)
         if (analysis_level == "MSA" && instrument_type == "county_population") {
-          if (!"msafips" %in% names(df)) stop("MSA identifiers are required for the county-matched population instrument.")
+          if (!"msafips" %in% names(df)) stop("MSA identifiers are required for the county-matched log population instrument.")
           df$clusterID <- as.integer(as.factor(df$msafips))
         } else df$clusterID <- as.integer(as.factor(df$instrument))
         if (apply_college_adj) {
@@ -1296,7 +1296,7 @@ server <- function(input, output, session) {
       map_title <- "Instrument Map: Historical density instrument map not available for the selected settings."
       
       if (level == "MSA" && identical(input$msa_instrument_type, "county_population")) {
-        map_title <- "Instrument Map: Historical MSA population"
+        map_title <- "Instrument Map: Log historical MSA population"
       } else if (level == "MSA") {
         year <- input$msa_iv_year
         pct <- input$msa_overlap_pct
@@ -1324,7 +1324,7 @@ server <- function(input, output, session) {
       
       map_output(list(src = map_path, title = map_title,
         message = if (level == "MSA" && identical(input$msa_instrument_type, "county_population"))
-          "A map is not available for the county-matched population instrument." else NULL))
+          "A map is not available for the county-matched log population instrument." else NULL))
     })
   })
   
@@ -1399,7 +1399,7 @@ server <- function(input, output, session) {
     parts <- c(parts, '</tbody></table></div>')
     note <- 'Standard errors in parentheses. *** p&lt;0.01, ** p&lt;0.05, * p&lt;0.1.'
     if (identical(instrument_type, "county_population"))
-      note <- paste0(note, ' The historical population instrument is measured in people and used in levels.')
+      note <- paste0(note, ' The instrument is the natural log of total historical population in the matched MSA counties.')
     if (length(diagnostic_models)) {
       note <- paste0(note, ' Instrument Wald F is the squared t statistic for the excluded instrument, using the selected standard errors and the model sample.')
     }
@@ -1499,7 +1499,7 @@ server <- function(input, output, session) {
       '<strong>Match of Historical to Modern Geographic Units:</strong> ', instrument_name(details$instrument_type),
       if (!is.null(details$overlap_pct)) paste0(' (', details$overlap_pct, '% overlap)') else '', '<br>',
       '<strong>Historical territory:</strong> ', details$sample_scope, '<br>',
-      if (is_county_population(details)) '<strong>Instrument units:</strong> People, in levels<br>' else ''
+      if (is_county_population(details)) '<strong>Instrument units:</strong> Natural log of people<br>' else ''
     )
     
     # Fixed Effects and Controls
@@ -1604,7 +1604,7 @@ server <- function(input, output, session) {
     sample_text <- if (length(unique(n)) == 1) format(n[1], big.mark = ",") else paste(format(range(n), big.mark = ","), collapse = "–")
     metric <- function(label, value, note) div(class = "metric-card", div(class = "metric-label", label), div(class = "metric-value", value), div(class = "metric-detail", note))
     tagList(div(class = "metric-grid",
-      metric(if (details$analysis_type == "First-stage Regression" && is_county_population(details)) "Population coefficient" else if (identical(details$density_measure, "CH")) "Ciccone–Hall elasticity" else "Density coefficient", if (nrow(primary)) {
+      metric(if (details$analysis_type == "First-stage Regression" && is_county_population(details)) "Log population coefficient" else if (identical(details$density_measure, "CH")) "Ciccone–Hall elasticity" else "Density coefficient", if (nrow(primary)) {
                if (details$analysis_type == "First-stage Regression" && is_county_population(details)) format(primary$estimate[1], digits = 4) else sprintf("%.3f", primary$estimate[1])
              } else "Unavailable",
              if (nrow(primary)) primary$model[1] else "Not identified in this sample"),
@@ -1663,7 +1663,7 @@ server <- function(input, output, session) {
       table$sample_year <- details$sample_year
       table$instrument_year <- details$iv_year
       table$instrument_construction <- instrument_name(details$instrument_type)
-      if (is_county_population(details)) table$instrument_units <- "People, in levels"
+      if (is_county_population(details)) table$instrument_units <- "Natural log of people"
       if (!is.null(details$overlap_pct)) table$overlap_threshold_pct <- details$overlap_pct
       utils::write.csv(table, file, row.names = FALSE, na = "")
     })
@@ -1688,7 +1688,7 @@ server <- function(input, output, session) {
         Sector = c("All", "Private", "Manufacturing", "Private non-farm", "Private non-farm/mining")[details$sectors],
         `Historical sample year` = details$sample_year, `Instrument year` = details$iv_year,
         `Historical territory` = details$sample_scope, `Instrument construction` = instrument_name(details$instrument_type),
-        `Instrument units` = if (is_county_population(details)) "People, in levels" else NULL,
+        `Instrument units` = if (is_county_population(details)) "Natural log of people" else NULL,
         `Overlap threshold (%)` = details$overlap_pct, `State fixed effects` = details$fe_type,
         `Standard errors` = if (is_county_population(details) && details$se_spec == "cluster_instrument") "Cluster on MSA" else details$se_spec, `Schooling adjustment` = details$schooling_adj,
         `College adjustment` = if (details$apply_college_adj) details$college_coeff else "None",

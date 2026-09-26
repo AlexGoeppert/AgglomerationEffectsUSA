@@ -7,7 +7,8 @@ library(haven)
 library(glue)
 library(stringr)
 library(shinycssloaders) # For withSpinner
-library(DT) # For professional table display
+library(DT)
+library(ggplot2)
 
 # --- 2. Load Data on Startup --------------------------------------------------
 
@@ -119,17 +120,123 @@ labeledInput <- function(inputId, labelText, inputUI, helpId, helpText) {
 # ============================================================================
 # 5. User Interface (UI) -------------------------------------------------------
 # ============================================================================
-ui <- fluidPage(
-  titlePanel(div(
+# Geographic controls use the names and units in the two prepared datasets.
+format_estimate <- function(value) {
+  if (!is.finite(value)) return("—")
+  sprintf("%.4f", value)
+}
+
+scale_model_controls <- function(data, selected) {
+  for (variable in intersect(selected, c("gaez_wheat_suit", "gaez_maize_suit")))
+    data[[variable]] <- data[[variable]] / 1000
+  data
+}
+
+resolve_geo_controls <- function(geo_groups = character(), water_groups = character(), water_year = 1820) {
+  land <- list(terrain = c("rugged_mean", "elev_mean"),
+               crop = c("gaez_wheat_suit", "gaez_maize_suit"),
+               climate = c("tjan", "tjul", "precip"))
+  water_year <- as.integer(water_year)
+  if (length(water_year) != 1L || is.na(water_year) || !water_year %in% seq(1790, 1860, 10))
+    stop("Choose a water-access year from 1790 to 1860, in ten-year steps.")
+  water <- list(shoreline = c("ocean_access10", "lakes_access10"),
+                historical_access = paste0(c("river_access_", "canal_access_"), water_year),
+                distance = c("ln1p_dist_ocean", "ln1p_dist_lakes",
+                             paste0(c("ln1p_dist_river_", "ln1p_dist_canal_"), water_year)),
+                portage = "portage_access10")
+  if (any(!geo_groups %in% names(land)) || any(!water_groups %in% names(water)))
+    stop("An unknown geographic control group was selected.")
+  unique(unname(unlist(c(land[geo_groups], water[water_groups]), use.names = FALSE)))
+}
+
+control_label <- function(variable) {
+  labels <- c(fit_RHS = "Log employment density (instrumented)", RHS = "Log employment density",
+              instrument = "Historical density instrument", `(Intercept)` = "Constant",
+              water_1820 = "Legacy water access, 1820", railroads_1840 = "Railroads, 1840",
+              railroads_1850 = "Railroads, 1850", railroads_1861 = "Railroads, 1861",
+              rugged_mean = "Terrain ruggedness (m)", elev_mean = "Mean elevation (m)",
+              gaez_wheat_suit = "Wheat suitability (per 1,000 points)",
+              gaez_maize_suit = "Maize suitability (per 1,000 points)",
+              tjan = "January temperature (°C)", tjul = "July temperature (°C)",
+              precip = "Annual precipitation (mm)", ocean_access10 = "Ocean access within 10 km",
+              lakes_access10 = "Great Lakes access within 10 km",
+              ln1p_dist_ocean = "Log(1 + ocean distance in km)",
+              ln1p_dist_lakes = "Log(1 + Great Lakes distance in km)",
+              portage_access10 = "Approximate portage access within 10 km")
+  if (variable %in% names(labels)) return(unname(labels[[variable]]))
+  legacy <- sub("1$", "", variable)
+  if (legacy %in% c("water_1820", "railroads_1840", "railroads_1850", "railroads_1861"))
+    return(unname(labels[[legacy]]))
+  year <- sub(".*([0-9]{4})$", "\\1", variable)
+  if (grepl("^river_access_", variable)) return(paste0("River access within 10 km, ", year))
+  if (grepl("^canal_access_", variable)) return(paste0("Canal access within 10 km, ", year))
+  if (grepl("^ln1p_dist_river_", variable)) return(paste0("Log(1 + river distance in km), ", year))
+  if (grepl("^ln1p_dist_canal_", variable)) return(paste0("Log(1 + canal distance in km), ", year))
+  variable
+}
+
+model_coefficients <- function(details) {
+  rows <- lapply(names(details$models), function(model_name) {
+    model <- details$models[[model_name]]
+    table <- fixest::coeftable(model)
+    interval <- stats::confint(model, level = .95)
+    terms <- rownames(table)
+    data.frame(model = model_name, term = terms,
+               label = vapply(terms, control_label, character(1)),
+               estimate = table[, 1], std_error = table[, 2],
+               statistic = table[, 3], p_value = table[, 4],
+               conf_low = interval[terms, 1], conf_high = interval[terms, 2],
+               observations = stats::nobs(model), geography = details$analysis_level,
+               year = details$year_modern, method = details$analysis_type,
+               stringsAsFactors = FALSE, row.names = NULL)
+  })
+  do.call(rbind, rows)
+}
+
+main_coefficient <- function(details) {
+  switch(details$analysis_type, IV = "fit_RHS", OLS = "RHS", "instrument")
+}
+
+result_plot <- function(details) {
+  estimates <- model_coefficients(details)
+  estimates <- estimates[estimates$term == main_coefficient(details), , drop = FALSE]
+  if (!nrow(estimates)) stop("The density coefficient could not be estimated for this specification.")
+  estimates$model <- factor(estimates$model, levels = rev(names(details$models)))
+  ggplot2::ggplot(estimates, ggplot2::aes(x = estimate, y = model)) +
+    ggplot2::geom_vline(xintercept = 0, color = "#999999", linetype = "dashed", linewidth = .5) +
+    ggplot2::geom_segment(ggplot2::aes(x = conf_low, xend = conf_high, yend = model),
+                          color = "#007BFF", linewidth = 1.5) +
+    ggplot2::geom_point(color = "#000000", fill = "#ffffff", shape = 21, size = 4.5, stroke = 1.6) +
+    ggplot2::scale_y_discrete(expand = ggplot2::expansion(add = .65)) +
+    ggplot2::scale_x_continuous(expand = ggplot2::expansion(mult = .12)) +
+    ggplot2::labs(x = if (details$analysis_type == "First-stage Regression") "Historical density coefficient" else "Employment density coefficient",
+                  y = NULL, title = paste(details$analysis_level, "·", details$year_modern, "·", details$analysis_type),
+                  subtitle = "Point estimates and 95% confidence intervals",
+                  caption = "Intervals use the selected standard-error specification.") +
+    ggplot2::theme_minimal(base_size = 14, base_family = "sans") +
+    ggplot2::theme(panel.grid.major.y = ggplot2::element_blank(), panel.grid.minor = ggplot2::element_blank(),
+                    panel.grid.major.x = ggplot2::element_line(color = "#e6e6e6"),
+                    plot.title = ggplot2::element_text(face = "bold", color = "#000000", size = 17),
+                    plot.subtitle = ggplot2::element_text(color = "#555555", margin = ggplot2::margin(b = 22)),
+                    axis.text = ggplot2::element_text(color = "#222222"),
+                    axis.title.x = ggplot2::element_text(margin = ggplot2::margin(t = 14)),
+                    plot.caption = ggplot2::element_text(color = "#555555", hjust = 0, margin = ggplot2::margin(t = 20)),
+                    plot.margin = ggplot2::margin(20, 22, 16, 14),
+                    plot.background = ggplot2::element_rect(fill = "white", color = NA))
+}
+
+ui <- fluidPage(title = "Agglomeration Effects USA",
+  titlePanel(div(class = "beamer-title",
     h2("Regression Interface: MSA and County Level Analysis"),
     p(style="margin-top: 10px; font-size: 14px;", 
       "Code, data and maps available at: ",
-      a("Github", 
+      a(icon("github"), " GitHub",
         href="https://github.com/AlexGoeppert/AgglomerationEffectsUSA", 
-        target="_blank", style="color: #007BFF;"))
-  )),
+        target="_blank", style="color: #007BFF;")),
+    div(class = "presentation-option", checkboxInput("presentation_mode", "Presentation view", FALSE))
+  ), windowTitle = "Agglomeration Effects USA"),
   
-  # Enhanced CSS for professional table styling
+  # Page and table styles
   tags$head(tags$style(HTML("
     .labeled-input-container{margin-bottom:15px}
     .input-button-row{display:flex;align-items:center;gap:8px}
@@ -141,7 +248,7 @@ ui <- fluidPage(
     .help-text{background-color:#f8f9fa;border-left:4px solid #007BFF;padding:10px 15px;margin-top:8px;font-size:13px;color:#495057;border-radius:0 4px 4px 0}
     #instrument_map_render img{max-width:100%;height:auto;border:1px solid #ddd;border-radius:4px}
     
-    /* LaTeX-style professional table styling */
+
     .regression-table {
       font-family: 'Computer Modern', 'Times New Roman', 'Times', serif;
       font-size: 16px;
@@ -224,10 +331,49 @@ ui <- fluidPage(
       color: #343a40;
       font-weight: 600;
     }
+
+    body{background:#fff;color:#000}
+    a{color:#007BFF}a:hover{color:#0056b3}
+    .btn-primary{background-color:#007BFF;border-color:#007BFF}
+    .btn-primary:hover,.btn-primary:focus,.btn-primary:active{background-color:#0056b3!important;border-color:#0056b3!important}
+    input[type=checkbox]{accent-color:#007BFF}
+    .irs-bar,.irs-bar-edge,.irs-single,.irs-from,.irs-to{background:#007BFF!important;border-color:#007BFF!important}
+    .container-fluid{padding-left:25px;padding-right:25px}
+    .beamer-title{border-bottom:2px solid #007BFF;padding-bottom:8px;margin-bottom:14px}
+    .beamer-title h2{color:#000;font-family:Georgia,'Times New Roman',serif;font-weight:normal}
+    .well{background:#fff;border-color:#ddd;box-shadow:none}
+    .well h4{margin-top:19px;margin-bottom:14px;font-size:17px;font-family:Georgia,'Times New Roman',serif;color:#000;border-bottom:1px solid #ddd;padding-bottom:6px}
+    .well h4:first-child{margin-top:0}
+    .control-label{line-height:1.45}
+    .presentation-option{margin:10px 0 16px;font-size:13px}
+    .presentation-option .checkbox{margin:0}
+    .presentation-option .shiny-input-container{margin:0}
+    .geo-control-note,.sample-note,.estimate-caption{font-size:12px;line-height:1.6;color:#555;margin:10px 0}
+    .sample-note{padding:8px 12px;background:#f8f9fa;border-left:3px solid #007BFF}
+    .download-row{display:flex;flex-wrap:wrap;gap:8px;margin:15px 0 20px}
+    .download-row .btn{font-size:12px;padding:6px 10px}
+    .optional-chart{margin:20px 0}
+    .optional-chart h4{font-size:17px}
+    .data-notes-panel{margin:20px 0;font-size:13px;line-height:1.6}
+    .data-notes-panel>summary{cursor:pointer;color:#007BFF;font-weight:600;margin-bottom:10px}
+    .data-notes-panel .note-card{padding:12px;background:#f8f9fa;border:1px solid #eee;margin:10px 0}
+    #results_table{overflow-x:auto}
+    body.presentation-mode .original-sidebar{display:none}
+    body.presentation-mode .original-results{width:100%}
+    @media(max-width:767px){.container-fluid{padding-left:15px;padding-right:15px}.regression-table{font-size:14px}.regression-table th,.regression-table td{padding-left:8px;padding-right:8px}}
+    @media print{.original-sidebar,.presentation-option,.download-row{display:none!important}.original-results{width:100%!important}.container-fluid{padding:0}.regression-table{page-break-inside:avoid}a[href]:after{content:none!important}}
   ")),
             tags$script(HTML("
     // Simple validation for text inputs used as numeric inputs
     $(document).ready(function() {
+      $('#run_analysis').closest('.col-sm-4').addClass('original-sidebar');
+      $('#results_table').closest('.col-sm-8').addClass('original-results');
+      function updatePresentation() {
+        document.body.classList.toggle('presentation-mode', $('#presentation_mode').prop('checked') === true);
+        setTimeout(function() { $(window).trigger('resize'); }, 100);
+      }
+      $(document).on('change', '#presentation_mode', updatePresentation);
+      $(document).on('shiny:connected', updatePresentation);
       // Add input validation and formatting
       var numericTextInputs = ['#msa_college_coeff', '#msa_mining_threshold', '#msa_spatial_cutoff', 
                                '#county_college_coeff', '#county_mining_threshold', '#county_spatial_cutoff'];
@@ -271,6 +417,7 @@ ui <- fluidPage(
                  # Display options
                  h4("Display Options"),
                  checkboxInput("show_map", "Display Instrument Map", value = TRUE),
+                 checkboxInput("show_coefficient_chart", "Display Coefficient Chart", value = FALSE),
                  conditionalPanel("input.show_map == true", sliderInput("map_size", "Map Size:", min = 25, max = 200, value = 75, post = "%")),
                  hr(),
                  
@@ -394,27 +541,65 @@ ui <- fluidPage(
                                     labeledInput("county_spatial_cutoff", "Spatial Cutoff (km):",
                                                  textInput("county_spatial_cutoff", NULL, "100", placeholder = "100"),
                                                  "help_county_spatial_cutoff", help_spatial_cutoff))
-                 )
+                 ),
+                 hr(),
+                 h4("Geographic Controls"),
+                 checkboxGroupInput("geo_controls", "Terrain, Soil and Climate:",
+                   c("Ruggedness and Elevation" = "terrain", "Wheat and Maize Suitability" = "crop", "Temperature and Precipitation" = "climate"), selected = character()),
+                 checkboxGroupInput("water_controls", "Water Access:",
+                   c("Ocean and Great Lakes Access" = "shoreline", "Historical River and Canal Access" = "historical_access", "Distance to Shores and Waterways" = "distance", "Approximate Portage Access" = "portage"), selected = character()),
+                 conditionalPanel("(input.water_controls || []).indexOf('historical_access') >= 0 || (input.water_controls || []).indexOf('distance') >= 0",
+                   selectInput("water_year", "Waterway Reference Year:", seq(1790, 1860, 10), 1820)),
+                 p(class = "geo-control-note", "Terrain and crop controls use area averages. Climate covers 1991–2020. Access means within 10 km; shores use modern boundaries, while rivers and canals use historical dates. Portage access is approximate. Geographic coverage is mainly the contiguous U.S.")
     ), # sidebarPanel
     
-    # Main panel with professional output
+    # Results
     mainPanel(
       h3(textOutput("results_header")),
+      uiOutput("sample_note"),
       hr(),
       withSpinner(htmlOutput("results_table"), type = 6, color = "black"),
-      htmlOutput("analysis_details"),
+      conditionalPanel("input.run_analysis > 0",
+        div(class = "download-row",
+          downloadButton("download_coefficients", "Coefficients (CSV)"),
+          downloadButton("download_results", "Results (HTML)"),
+          conditionalPanel("input.show_coefficient_chart == true", downloadButton("download_plot", "Chart (PNG)"))
+        )
+      ),
+      conditionalPanel("input.show_coefficient_chart == true && input.run_analysis > 0",
+        div(class = "optional-chart",
+          h4("Coefficient Estimates"),
+          p(class = "estimate-caption", "Points show the estimated density effect; lines show 95% confidence intervals."),
+          withSpinner(plotOutput("effect_plot", height = "360px"), type = 6, color = "#007BFF")
+        )
+      ),
+      conditionalPanel("input.run_analysis > 0",
+        div(class = "configuration-toggle", style = "margin: 16px 0;",
+          actionButton("toggle_configuration", "Show regression configuration", icon = icon("list"), class = "btn-sm")),
+        conditionalPanel("input.toggle_configuration % 2 == 1", htmlOutput("analysis_details"))),
+      conditionalPanel("input.run_analysis > 0",
+        tags$details(class = "data-notes-panel", tags$summary("Geographic data and sources"), uiOutput("data_notes"))
+      ),
       conditionalPanel(condition = "input.show_map == true", hr(), h3(textOutput("map_header")), uiOutput("map_ui"))
     )
   )
 )
 
-# ============================================================================
-# 6. Server Logic with Professional Table Formatting and F-Statistic
-# ============================================================================
 server <- function(input, output, session) {
   
   analysis_output <- reactiveVal(NULL)
   map_output <- reactiveVal(NULL)
+
+  estimated_sample <- function(model, details = analysis_output()) {
+    details$data_for_fs[fixest::obs(model), , drop = FALSE]
+  }
+
+  instrument_wald_f <- function(model) {
+    b <- coef(model)["instrument"]
+    uncertainty <- se(model)["instrument"]
+    if (length(b) != 1L || !is.finite(b) || !is.finite(uncertainty) || uncertainty <= 0) return(NA_real_)
+    unname((b / uncertainty)^2)
+  }
   
   # Simple helper function to safely convert text inputs to numeric
   safe_numeric <- function(value, default = 0) {
@@ -479,7 +664,7 @@ server <- function(input, output, session) {
             
             # Try to find MSA identifier column
             msa_id_col <- NULL
-            potential_id_cols <- c("msaid", "msa_code", "msaname", "msa_id", "cbsacode")
+            potential_id_cols <- c("msafips", "msaid", "msa_code", "msaname", "msa_id", "cbsacode")
             for (col in potential_id_cols) {
               if (col %in% names(df)) {
                 msa_id_col <- col
@@ -662,11 +847,14 @@ server <- function(input, output, session) {
         
         incProgress(0.3, detail = "Finalizing data preparation...")
         
+        new_controls <- resolve_geo_controls(input$geo_controls, input$water_controls, input$water_year)
+        controls_vec <- unique(c(controls_vec, new_controls))
         req_cols <- c(sample_col, instr_col, controls_vec)
         missing_cols <- req_cols[!req_cols %in% names(df)]
         if (length(missing_cols) > 0) {
           stop(glue("Error: Required column(s) not found: {paste(missing_cols, collapse=', ')}. Check selections or data file."))
         }
+        df <- scale_model_controls(df, controls_vec)
         
         df <- df %>% mutate(across(all_of(c(sample_col, instr_col)), as.numeric))
         df <- df %>%
@@ -695,6 +883,11 @@ server <- function(input, output, session) {
           stop("After all filtering, 0 observations remain. Check selections for missing data in key variables.")
         }
         
+        eligible_n <- nrow(df)
+        geo_missing_n <- if (length(new_controls)) {
+          sum(!Reduce(`&`, lapply(df[new_controls], is.finite)))
+        } else 0L
+
         incProgress(0.5, detail = "Building regression models...")
         
         dep_vars_map <- list(
@@ -707,6 +900,9 @@ server <- function(input, output, session) {
           dep_vars_map <- list("3" = setNames(c("LHS_adj1", "LHS_adj2"), c("Same Return Adj.", "Specific Return Adj.")))
         }
         dep_vars <- dep_vars_map[[as.character(schooling_adj)]]
+        if (analysis_type == "First-stage Regression") {
+          dep_vars <- setNames("RHS", "First stage")
+        }
         controls_part <- if (length(controls_vec) > 0) paste("+", paste(controls_vec, collapse = " + ")) else ""
         fe_part <- "0"
         if (use_fe) {
@@ -724,10 +920,8 @@ server <- function(input, output, session) {
         
         # Determine vcov argument based on standard error specification
         if (se_spec == "spatial") {
-          # For spatial standard errors using fixest's conley() function
-          # First set the coordinates for Conley standard errors
-          setFixest_fml(..vcov.conley = ~ lat + lon)
-          vcov_arg <- conley(cutoff = spatial_cutoff, distance = "spherical")
+          if (!is.finite(spatial_cutoff) || spatial_cutoff <= 0) stop("Choose a positive spatial distance cutoff.")
+          vcov_arg <- vcov_conley(lat = "lat", lon = "lon", cutoff = spatial_cutoff, distance = "spherical")
         } else {
           vcov_arg <- switch(se_spec,
                              "robust" = "hetero",
@@ -739,7 +933,12 @@ server <- function(input, output, session) {
         
         incProgress(0.7, detail = "Estimating models...")
         models <- list()
-        first_stage_models <- list()  # Store first-stage models for F-stat extraction
+        first_stage_models <- list()
+        model_warnings <- character()
+        record_model_warning <- function(warning) {
+          model_warnings <<- unique(c(model_warnings, conditionMessage(warning)))
+          invokeRestart("muffleWarning")
+        }
         
         for (i in seq_along(dep_vars)) {
           dep_var_name <- dep_vars[i]
@@ -752,17 +951,28 @@ server <- function(input, output, session) {
                                 stop("Invalid 'analysis_type' specified.")
           )
           
-          model <- feols(as.formula(formula_str), data = df, vcov = vcov_arg)
+          model <- withCallingHandlers(
+            feols(as.formula(formula_str), data = df, vcov = vcov_arg),
+            warning = record_model_warning
+          )
           models[[model_name]] <- model
           
-          # For IV regressions, also run first-stage manually to get F-stat
           if (analysis_type == "IV") {
-            fs_formula_str <- glue("RHS ~ instrument {controls_part} | {fe_part}")
-            fs_model <- feols(as.formula(fs_formula_str), data = df, vcov = vcov_arg)
-            first_stage_models[[model_name]] <- fs_model
+            first_stage_models[[model_name]] <- withCallingHandlers(
+              summary(model, stage = 1),
+              warning = record_model_warning
+            )
           }
         }
         
+        model_n <- vapply(models, nobs, integer(1))
+        cluster_column <- switch(se_spec, cluster_instrument = "clusterID", cluster_state = "state_id", NULL)
+        model_clusters <- vapply(models, function(model) {
+          if (is.null(cluster_column)) return(NA_integer_)
+          values <- df[[cluster_column]][fixest::obs(model)]
+          as.integer(length(unique(values[!is.na(values)])))
+        }, integer(1))
+
         incProgress(0.9, detail = "Formatting results...")
         
         # Return both models and metadata for professional formatting
@@ -788,12 +998,21 @@ server <- function(input, output, session) {
           fe_type = if(use_fe) fe_type else "No",
           sample_scope = sample_scope,
           controls = if(length(controls_vec) > 0) paste(controls_vec, collapse = ", ") else "None",
-          n_obs = nrow(df),
+          n_obs = unname(model_n[[1]]),
+          eligible_n = eligible_n,
+          geo_missing_n = geo_missing_n,
+          model_n = model_n,
+          model_clusters = model_clusters,
+          model_warnings = model_warnings,
+          geo_controls = input$geo_controls,
+          water_controls = input$water_controls,
+          water_year = as.integer(input$water_year),
+          new_controls = new_controls,
           cluster_data = list(
             clusterID = if("clusterID" %in% names(df)) df$clusterID else NULL,
             state_id = if("state_id" %in% names(df)) df$state_id else NULL
           ),
-          data_for_fs = df,  # Pass data for manual F-stat calculation if needed
+          data_for_fs = df,
           controls_vec = controls_vec,
           fe_part = fe_part,
           vcov_arg = vcov_arg
@@ -845,8 +1064,8 @@ server <- function(input, output, session) {
   
   # --- 3. Professional Table Formatting Functions ---
   format_coefficient <- function(coef, se, stars = "") {
-    coef_str <- sprintf("%.4f", coef)
-    se_str <- sprintf("(%.4f)", se)
+    coef_str <- format_estimate(coef)
+    se_str <- paste0("(", format_estimate(se), ")")
     if (stars != "") coef_str <- paste0(coef_str, stars)
     return(list(coef = coef_str, se = se_str))
   }
@@ -859,247 +1078,68 @@ server <- function(input, output, session) {
     return("")
   }
   
-  create_professional_table <- function(models, analysis_type, se_spec = NULL, cluster_data = NULL, 
-                                        first_stage_models = NULL, data_for_fs = NULL, 
-                                        controls_vec = NULL, fe_part = NULL, vcov_arg = NULL) {
-    if (length(models) == 0) return("")
-    
-    # Get coefficient information for all variables
-    all_var_data <- list()
+  create_professional_table <- function(models, analysis_type, se_spec = NULL, cluster_data = NULL,
+                                        first_stage_models = NULL, data_for_fs = NULL,
+                                        controls_vec = NULL, fe_part = NULL, vcov_arg = NULL,
+                                        model_clusters = NULL) {
+    if (!length(models)) return("")
+    escape <- function(x) as.character(htmltools::htmlEscape(x))
     model_names <- names(models)
-    
-    # Collect all unique variable names across models
-    all_vars <- c()
-    for (i in seq_along(models)) {
-      model <- models[[i]]
-      coef_names <- names(coef(model))
-      all_vars <- union(all_vars, coef_names)
+    all_vars <- unique(unlist(lapply(models, function(model) names(coef(model)))))
+    main_var <- switch(analysis_type, IV = "fit_RHS", OLS = "RHS", "instrument")
+    ordered_vars <- unique(c(intersect(main_var, all_vars), setdiff(all_vars, main_var)))
+    cells <- function(values, css = "stats") {
+      paste0('<td class="', css, '">', values, '</td>', collapse = "")
     }
-    
-    # Define main variable name based on analysis type
-    if (analysis_type %in% c("IV", "OLS")) {
-      main_var <- ifelse(analysis_type == "IV", "fit_RHS", "RHS")
-    } else {
-      main_var <- "instrument"
+    row <- function(label, values, css = "stats", row_class = "") {
+      paste0('<tr class="', row_class, '"><td class="row-label ', css, '">',
+             escape(label), '</td>', cells(values, css), '</tr>')
     }
-    
-    # Order variables: main variable first, then controls
-    ordered_vars <- c(main_var, setdiff(all_vars, main_var))
-    
-    # Function to get nice variable names
-    get_var_label <- function(var_name) {
-      switch(var_name,
-             "fit_RHS" = "log(Total Employment Density) [Instrumented]",
-             "RHS" = "log(Total Employment Density)",
-             "instrument" = "Historical Density Instrument",
-             "water_18201" = "Water Access 1820",
-             "railroads_18401" = "Railroads 1840", 
-             "railroads_18501" = "Railroads 1850",
-             "railroads_18611" = "Railroads 1861",
-             var_name)  # Default to original name if no mapping
+    parts <- c('<div class="regression-table-scroll"><table class="regression-table">',
+               paste0('<thead><tr><th class="row-label">Variable</th>',
+                      paste0('<th>', escape(model_names), '</th>', collapse = ""), '</tr></thead><tbody>'))
+    for (variable in ordered_vars) {
+      estimates <- vapply(models, function(model) {
+        if (!variable %in% names(coef(model))) return("—")
+        paste0(format_estimate(coef(model)[variable]), get_significance_stars(pvalue(model)[variable]))
+      }, character(1))
+      uncertainties <- vapply(models, function(model) {
+        if (!variable %in% names(coef(model))) return("")
+        paste0("(", format_estimate(se(model)[variable]), ")")
+      }, character(1))
+      parts <- c(parts, row(control_label(variable), estimates, "coefficient"), row("", uncertainties, "se"))
     }
-    
-    # Extract coefficients for each variable and model
-    for (var_name in ordered_vars) {
-      if (var_name %in% all_vars) {
-        var_data <- list()
-        
-        for (i in seq_along(models)) {
-          model_name <- model_names[i]
-          model <- models[[i]]
-          
-          # Handle fixest format
-          coefs <- coef(model)
-          ses <- se(model) 
-          pvals <- pvalue(model)
-          
-          if (var_name %in% names(coefs)) {
-            coef_val <- coefs[var_name]
-            se_val <- ses[var_name]
-            p_val <- pvals[var_name]
-            stars <- get_significance_stars(p_val)
-            
-            var_data[[model_name]] <- format_coefficient(coef_val, se_val, stars)
-          } else {
-            var_data[[model_name]] <- list(coef = "—", se = "")
-          }
-        }
-        
-        all_var_data[[var_name]] <- var_data
-      }
+    parts <- c(parts, row("Observations", vapply(models, function(model) format(nobs(model), big.mark = ","), character(1)), row_class = "top-border"))
+    diagnostic_models <- if (analysis_type == "IV") first_stage_models else if (analysis_type == "First-stage Regression") models else NULL
+    if (length(diagnostic_models)) {
+      fstats <- vapply(model_names, function(name) {
+        value <- instrument_wald_f(diagnostic_models[[name]])
+        if (is.finite(value)) sprintf("%.2f", value) else "—"
+      }, character(1))
+      parts <- c(parts, row("Instrument Wald F", fstats))
     }
-    
-    # Build LaTeX-style HTML table
-    html_parts <- c('<table class="regression-table">')
-    
-    # Header row
-    header_cols <- paste(sapply(model_names, function(x) paste0('<th>', x, '</th>')), collapse = "")
-    html_parts <- c(html_parts, paste0('<tr><th class="row-label"></th>', header_cols, '</tr>'))
-    
-    # Variable rows
-    for (var_name in names(all_var_data)) {
-      var_label <- get_var_label(var_name)
-      var_data <- all_var_data[[var_name]]
-      
-      # Coefficient row
-      coef_cells <- paste(sapply(model_names, function(mn) {
-        if (mn %in% names(var_data)) {
-          paste0('<td class="coefficient">', var_data[[mn]]$coef, '</td>')
-        } else {
-          '<td class="coefficient">—</td>'
-        }
-      }), collapse = "")
-      html_parts <- c(html_parts, paste0('<tr><td class="row-label">', var_label, '</td>', coef_cells, '</tr>'))
-      
-      # Standard error row
-      se_cells <- paste(sapply(model_names, function(mn) {
-        if (mn %in% names(var_data)) {
-          paste0('<td class="se">', var_data[[mn]]$se, '</td>')
-        } else {
-          '<td class="se"></td>'
-        }
-      }), collapse = "")
-      html_parts <- c(html_parts, paste0('<tr><td class="row-label"></td>', se_cells, '</tr>'))
+    if (!is.null(model_clusters) && any(!is.na(model_clusters))) {
+      label <- if (se_spec == "cluster_instrument") "Instrument clusters" else "State clusters"
+      parts <- c(parts, row(label, ifelse(is.na(model_clusters), "—", model_clusters)))
     }
-    
-    # Empty row for spacing
-    empty_cells <- paste(rep('<td></td>', length(model_names)), collapse = "")
-    html_parts <- c(html_parts, paste0('<tr><td class="row-label"></td>', empty_cells, '</tr>'))
-    
-    # Statistics rows with top border
-    n_cells <- paste(sapply(models, function(m) {
-      n_obs <- nobs(m)
-      paste0('<td class="stats">', format(n_obs, big.mark = ","), '</td>')
-    }), collapse = "")
-    html_parts <- c(html_parts, paste0('<tr class="top-border"><td class="row-label stats">Observations</td>', n_cells, '</tr>'))
-    
-    # Add First-Stage F-Statistic for IV regressions
-    if (analysis_type == "IV") {
-      fstat_cells <- paste(sapply(model_names, function(mn) {
-        tryCatch({
-          # Method 1: Try to get from fitstat
-          if (!is.null(first_stage_models) && mn %in% names(first_stage_models)) {
-            fs_model <- first_stage_models[[mn]]
-            fstat_info <- fitstat(fs_model, type = "ivf")
-            if (!is.null(fstat_info) && "stat" %in% names(fstat_info)) {
-              fstat_value <- sprintf("%.2f", fstat_info$stat)
-              return(paste0('<td class="stats">', fstat_value, '</td>'))
-            }
-          }
-          
-          # Method 2: Manual calculation using first-stage model
-          if (!is.null(first_stage_models) && mn %in% names(first_stage_models)) {
-            fs_model <- first_stage_models[[mn]]
-            coef_instr <- coef(fs_model)["instrument"]
-            se_instr <- se(fs_model)["instrument"]
-            if (!is.na(coef_instr) && !is.na(se_instr) && se_instr != 0) {
-              fstat_value <- (coef_instr / se_instr)^2
-              fstat_value <- sprintf("%.2f", fstat_value)
-              return(paste0('<td class="stats">', fstat_value, '</td>'))
-            }
-          }
-          
-          return(paste0('<td class="stats">—</td>'))
-          
-        }, error = function(e) {
-          return(paste0('<td class="stats">—</td>'))
-        })
-      }), collapse = "")
-      html_parts <- c(html_parts, paste0('<tr><td class="row-label stats">First-Stage F-Statistic</td>', fstat_cells, '</tr>'))
+    parts <- c(parts, '</tbody></table></div>')
+    note <- 'Standard errors in parentheses. *** p&lt;0.01, ** p&lt;0.05, * p&lt;0.1.'
+    if (length(diagnostic_models)) {
+      note <- paste0(note, ' Instrument Wald F is the squared t statistic for the excluded instrument, using the selected standard errors and the model sample.')
     }
-    
-    # Add F-Statistic and T-Statistic for First-stage Regression
-    if (analysis_type == "First-stage Regression") {
-      # Overall F-Statistic - use same method that works for IV regressions
-      fstat_cells <- paste(sapply(models, function(m) {
-        tryCatch({
-          # Use the same method that works for IV first-stage models
-          fstat_info <- fitstat(m, type = "ivf")
-          if (!is.null(fstat_info) && "stat" %in% names(fstat_info)) {
-            fstat_value <- sprintf("%.2f", fstat_info$stat)
-            return(paste0('<td class="stats">', fstat_value, '</td>'))
-          }
-          
-          # Fallback: Manual calculation using first-stage coefficient
-          coefs <- coef(m)
-          ses <- se(m)
-          if ("instrument" %in% names(coefs)) {
-            coef_instr <- coefs["instrument"]
-            se_instr <- ses["instrument"]
-            if (!is.na(coef_instr) && !is.na(se_instr) && se_instr != 0) {
-              fstat_value <- (coef_instr / se_instr)^2
-              fstat_value <- sprintf("%.2f", fstat_value)
-              return(paste0('<td class="stats">', fstat_value, '</td>'))
-            }
-          }
-          
-          return(paste0('<td class="stats">—</td>'))
-          
-        }, error = function(e) {
-          return(paste0('<td class="stats">—</td>'))
-        })
-      }), collapse = "")
-      html_parts <- c(html_parts, paste0('<tr><td class="row-label stats">F-Statistic</td>', fstat_cells, '</tr>'))
-      
-      # T-Statistic for instrument
-      tstat_cells <- paste(sapply(models, function(m) {
-        tryCatch({
-          coefs <- coef(m)
-          ses <- se(m)
-          if ("instrument" %in% names(coefs)) {
-            coef_instr <- coefs["instrument"]
-            se_instr <- ses["instrument"]
-            if (!is.na(coef_instr) && !is.na(se_instr) && se_instr != 0) {
-              tstat_value <- coef_instr / se_instr
-              tstat_value <- sprintf("%.2f", tstat_value)
-              return(paste0('<td class="stats">', tstat_value, '</td>'))
-            }
-          }
-          return(paste0('<td class="stats">—</td>'))
-        }, error = function(e) {
-          return(paste0('<td class="stats">—</td>'))
-        })
-      }), collapse = "")
-      html_parts <- c(html_parts, paste0('<tr><td class="row-label stats">T-Statistic (Instrument)</td>', tstat_cells, '</tr>'))
-    }
-    
-    # Add cluster information if relevant
-    if (!is.null(se_spec) && !is.null(cluster_data)) {
-      if (se_spec == "cluster_instrument" && !is.null(cluster_data$clusterID)) {
-        n_clusters <- length(unique(cluster_data$clusterID))
-        cluster_cells <- paste(rep(paste0('<td class="stats">', n_clusters, '</td>'), length(models)), collapse = "")
-        html_parts <- c(html_parts, paste0('<tr><td class="row-label stats">Clusters (Instrument)</td>', cluster_cells, '</tr>'))
-      } else if (se_spec == "cluster_state" && !is.null(cluster_data$state_id)) {
-        n_clusters <- length(unique(cluster_data$state_id))
-        cluster_cells <- paste(rep(paste0('<td class="stats">', n_clusters, '</td>'), length(models)), collapse = "")
-        html_parts <- c(html_parts, paste0('<tr><td class="row-label stats">Clusters (State)</td>', cluster_cells, '</tr>'))
-      }
-    }
-    
-    # Close table with bottom border
-    html_parts[length(html_parts)] <- gsub('<tr><td', '<tr class="bottom-border"><td', html_parts[length(html_parts)])
-    html_parts <- c(html_parts, '</table>')
-    
-    # Add significance notes in LaTeX style
-    note_text <- 'Notes: Standard errors in parentheses. *** p&lt;0.01, ** p&lt;0.05, * p&lt;0.1'
-    if (analysis_type == "IV") {
-      note_text <- paste0(note_text, '. First-Stage F-Statistic tests instrument strength (F &gt; 10 indicates strong instrument).')
-    }
-    if (se_spec == "spatial") {
-      note_text <- paste0(note_text, '. Spatial standard errors computed using uniform kernel.')
-    }
-    html_parts <- c(html_parts, paste0('<div class="table-notes">', note_text, '</div>'))
-    
-    return(paste(html_parts, collapse = "\n"))
+    if (se_spec == "spatial") note <- paste0(note, ' Conley standard errors use a uniform kernel.')
+    parts <- c(parts, paste0('<div class="table-notes">', note, '</div>'))
+    paste(parts, collapse = "\n")
   }
-  
+
   # --- 4. Render Professional Outputs ---
   output$results_header <- renderText({
     req(analysis_output())
     if ("error" %in% names(analysis_output())) {
       "Analysis Error"
     } else {
-      glue("{input$analysis_level} Level Results: {input$analysis_type}")
+      details <- analysis_output()
+      glue("{details$analysis_level} results · {details$analysis_type}")
     }
   })
   
@@ -1120,7 +1160,8 @@ server <- function(input, output, session) {
         data_for_fs = details$data_for_fs,
         controls_vec = details$controls_vec,
         fe_part = details$fe_part,
-        vcov_arg = details$vcov_arg
+        vcov_arg = details$vcov_arg,
+        model_clusters = details$model_clusters
       ))
     }
   })
@@ -1164,11 +1205,9 @@ server <- function(input, output, session) {
     # Build comprehensive analysis details
     se_description <- details$se_spec
     if (details$se_spec == "cluster_instrument" && !is.null(details$cluster_data$clusterID)) {
-      n_clusters <- length(unique(details$cluster_data$clusterID))
-      se_description <- paste0("Cluster on Instrument (", n_clusters, " clusters)")
+      se_description <- "Cluster on historical instrument"
     } else if (details$se_spec == "cluster_state" && !is.null(details$cluster_data$state_id)) {
-      n_clusters <- length(unique(details$cluster_data$state_id))
-      se_description <- paste0("Cluster on State (", n_clusters, " clusters)")
+      se_description <- "Cluster on modern state"
     } else if (details$se_spec == "spatial") {
       spatial_cutoff_formatted <- sprintf("%.0f", as.numeric(details$spatial_cutoff))
       se_description <- paste0("Spatial (Conley). ", spatial_cutoff_formatted, " km cutoff. Uniform kernel")
@@ -1193,17 +1232,17 @@ server <- function(input, output, session) {
       '<strong>Year of the Historical Population Density (Historical Census Year):</strong> ', details$iv_year, '<br>',
       '<strong>Match of Historical to Modern Geographic Units:</strong> ', get_instrument_name(details$instrument_type, details$analysis_level),
       if (!is.null(details$overlap_pct)) paste0(' (', details$overlap_pct, '% overlap)') else '', '<br>',
-      '<strong>Historical Territory::</strong> ', details$sample_scope, '<br>'
+      '<strong>Historical territory:</strong> ', details$sample_scope, '<br>'
     )
     
     # Fixed Effects and Controls
     detail_sections$controls <- paste0(
       '<strong>State Fixed Effects:</strong> ', details$fe_type, '<br>',
-      '<strong>Control Variables:</strong> ', details$controls, '<br>'
+      '<strong>Control variables:</strong> ', if (length(details$controls_vec)) paste(vapply(details$controls_vec, control_label, character(1)), collapse = ', ') else 'None', '<br>'
     )
     
     # Adjustments
-    adjustment_text <- paste0('<strong> Modern Adjustment for Human Capital::</strong> ', get_schooling_adj_name(details$schooling_adj))
+    adjustment_text <- paste0('<strong> Modern Adjustment for Human capital:</strong> ', get_schooling_adj_name(details$schooling_adj))
     if (details$apply_college_adj && !is.null(details$college_coeff)) {
       college_coeff_formatted <- sprintf("%.2f", as.numeric(details$college_coeff))
       adjustment_text <- paste0(adjustment_text, '<br><strong>College Share Adjustment:</strong> Yes (coefficient = ', college_coeff_formatted, ' - Based on Moretti (2004))')
@@ -1212,9 +1251,9 @@ server <- function(input, output, session) {
     }
     if (details$mining_filter_active && !is.null(details$mining_threshold)) {
       mining_threshold_formatted <- sprintf("%.3f", as.numeric(details$mining_threshold))
-      adjustment_text <- paste0(adjustment_text, '<br><strong>Max Mining Share::</strong> Yes (max share = ', mining_threshold_formatted, ')')
+      adjustment_text <- paste0(adjustment_text, '<br><strong>Maximum mining share:</strong> Yes (max share = ', mining_threshold_formatted, ')')
     } else {
-      adjustment_text <- paste0(adjustment_text, '<br><strong>Max Mining Share::</strong> No')
+      adjustment_text <- paste0(adjustment_text, '<br><strong>Maximum mining share:</strong> No')
     }
     detail_sections$adjustments <- paste0(adjustment_text, '<br>')
     
@@ -1227,7 +1266,9 @@ server <- function(input, output, session) {
     # Standard Errors and Sample Size
     detail_sections$technical <- paste0(
       '<strong>Standard Errors:</strong> ', se_description, '<br>',
-      '<strong>Total Observations:</strong> ', format(details$n_obs, big.mark = ",")
+      '<strong>Observations used:</strong> ', if (length(unique(details$model_n)) == 1L) format(details$model_n[[1]], big.mark = ',') else paste(names(details$model_n), format(details$model_n, big.mark = ','), sep = ': ', collapse = '; '), '<br>',
+      '<strong>Eligible before control and model exclusions:</strong> ', format(details$eligible_n, big.mark = ','), '<br>',
+      '<strong>Missing selected geographic controls:</strong> ', format(details$geo_missing_n, big.mark = ',')
     )
     
     # Combine all sections
@@ -1268,7 +1309,125 @@ server <- function(input, output, session) {
       alt = "Instrument Map"
     )
   }, deleteFile = FALSE)
+
+  valid_result <- reactive({
+    details <- analysis_output()
+    req(details, is.null(details$error), length(details$models))
+    details
+  })
+
+  observeEvent(input$toggle_configuration, {
+    updateActionButton(session, "toggle_configuration", label =
+      if (input$toggle_configuration %% 2L == 1L) "Hide regression configuration" else "Show regression configuration")
+  }, ignoreInit = TRUE)
+
+  output$results_summary <- renderUI({
+    details <- analysis_output()
+    if (is.null(details)) return(div(class = "empty-state",
+      div(class = "empty-state-mark", icon("chart-line")),
+      h3("Explore the geography of productivity"),
+      p("Choose a sample and specification, then select Run analysis."),
+      p(class = "empty-state-meta", paste(format(length(unique(msa_data$msafips)), big.mark = ","),
+        "MSAs ·", format(length(unique(county_data$geofips)), big.mark = ","), "counties · 2001–2022"))))
+    if (!is.null(details$error)) return(div(class = "note-card", role = "alert", h4("This specification could not be estimated"), p(details$error)))
+    estimates <- model_coefficients(details)
+    primary <- estimates[estimates$term == main_coefficient(details), , drop = FALSE]
+    n <- vapply(details$models, stats::nobs, numeric(1))
+    sample_text <- if (length(unique(n)) == 1) format(n[1], big.mark = ",") else paste(format(range(n), big.mark = ","), collapse = "–")
+    metric <- function(label, value, note) div(class = "metric-card", div(class = "metric-label", label), div(class = "metric-value", value), div(class = "metric-detail", note))
+    tagList(div(class = "metric-grid",
+      metric("Density coefficient", if (nrow(primary)) sprintf("%.3f", primary$estimate[1]) else "Unavailable",
+             if (nrow(primary)) primary$model[1] else "Not identified in this sample"),
+      metric("95% interval", if (nrow(primary)) sprintf("%.3f to %.3f", primary$conf_low[1], primary$conf_high[1]) else "—", "Using the chosen standard errors"),
+      metric("Observations", sample_text, paste(length(details$models), if (length(details$models) == 1) "model" else "models")),
+      metric("Modern year", as.character(details$year_modern), paste(details$analysis_level, "·", details$analysis_type))),
+      div(class = "estimate-caption", "The chart compares the selected schooling adjustments. The table contains every estimated coefficient."))
+  })
+
+  output$effect_plot <- renderPlot({ result_plot(valid_result()) }, res = 120)
+
+  output$sample_note <- renderUI({
+    details <- analysis_output()
+    if (is.null(details) || !is.null(details$error)) return(NULL)
+    counts <- vapply(details$models, stats::nobs, numeric(1))
+    eligible <- if (is.null(details$eligible_n)) details$n_obs else details$eligible_n
+    missing_geo <- if (is.null(details$geo_missing_n)) 0L else details$geo_missing_n
+    selected <- details$new_controls
+    omitted <- unique(unlist(lapply(details$models, function(m) m$collin.var)))
+    notices <- list()
+    if (missing_geo > 0) notices <- c(notices, list(p(paste(format(missing_geo, big.mark = ","),
+      "eligible observations have missing values in the selected geographic controls. Missing values are excluded, never set to zero."))))
+    if (length(unique(counts)) > 1) notices <- c(notices, list(p("The models use different sample sizes because their required values differ.")))
+    if (length(omitted)) notices <- c(notices, list(p(paste("Omitted because of collinearity:", paste(vapply(omitted, control_label, character(1)), collapse = "; "), "."))))
+    if (length(details$model_warnings)) notices <- c(notices, lapply(details$model_warnings, function(warning) p(paste("Estimation note:", warning))))
+    if ("portage_access10" %in% selected) notices <- c(notices, list(p("Portage access uses approximate fall-line/river candidates, not a verified historical portage inventory.")))
+    if (!length(notices)) return(NULL)
+    div(class = "sample-note", notices)
+  })
+
+  output$data_notes <- renderUI({
+    div(class = "data-notes",
+      h4("Geographic measures"),
+      tags$dl(
+        tags$dt("Terrain"), tags$dd("Area-weighted Nunn–Puga ruggedness and PRISM elevation, in metres."),
+        tags$dt("Crop suitability"), tags$dd("GAEZ wheat and maize indices, 0–10,000: rainfed production with low inputs, 1981–2010. Regression coefficients refer to a 1,000-point increase in each index."),
+        tags$dt("Climate"), tags$dd("PRISM 1991–2020 normals: January and July temperature in °C, annual precipitation in mm."),
+        tags$dt("Water"), tags$dd("Access means the geographic footprint lies within 10 km. River and canal dates follow Atack; shoreline uses modern Census geometry. Distances run from the geometric centroid and enter as log(1 + km)."),
+        tags$dt("Coverage"), tags$dd("These new controls cover the contiguous US. Missing coverage and uncertain historical dates remain missing. Approximate portage candidates are optional; historical harbor depth is not included.")),
+      p("Measures are calculated over county or MSA boundaries. The original water and railroad variables remain available under Historical infrastructure."))
+  })
+
+  output$download_coefficients <- downloadHandler(
+    filename = function() {d <- valid_result(); paste0("agglomeration-", tolower(d$analysis_level), "-", d$year_modern, "-coefficients.csv")},
+    content = function(file) {
+      details <- valid_result()
+      table <- model_coefficients(details)
+      table$controls <- paste(details$controls_vec, collapse = "; ")
+      table$water_year <- details$water_year
+      table$standard_errors <- details$se_spec
+      table$fixed_effects <- details$fe_type
+      table$sample_year <- details$sample_year
+      table$instrument_year <- details$iv_year
+      utils::write.csv(table, file, row.names = FALSE, na = "")
+    })
+
+  output$download_plot <- downloadHandler(
+    filename = function() {d <- valid_result(); paste0("agglomeration-", tolower(d$analysis_level), "-", d$year_modern, ".png")},
+    content = function(file) {ggplot2::ggsave(file, result_plot(valid_result()), device = "png", width = 10, height = 5.5, dpi = 300, bg = "white")})
+
+  output$download_results <- downloadHandler(
+    filename = function() {d <- valid_result(); paste0("agglomeration-", tolower(d$analysis_level), "-", d$year_modern, "-results.html")},
+    content = function(file) {
+      details <- valid_result()
+      chart_file <- tempfile(fileext = ".png")
+      on.exit(unlink(chart_file))
+      ggplot2::ggsave(chart_file, result_plot(details), device = "png", width = 9, height = 4.7, dpi = 180, bg = "white")
+      chart_data <- base64enc::dataURI(file = chart_file, mime = "image/png")
+      table <- create_professional_table(details$models, details$analysis_type, details$se_spec,
+        details$cluster_data, details$first_stage_models, details$data_for_fs, details$controls_vec, details$fe_part, details$vcov_arg,
+        model_clusters = details$model_clusters)
+      esc <- htmltools::htmlEscape
+      specifications <- c(Geography = details$analysis_level, Method = details$analysis_type, `Modern year` = details$year_modern,
+        Sector = c("All", "Private", "Manufacturing", "Private non-farm", "Private non-farm/mining")[details$sectors],
+        `Historical sample year` = details$sample_year, `Instrument year` = details$iv_year,
+        `Historical territory` = details$sample_scope, `Instrument construction` = details$instrument_type,
+        `Overlap threshold (%)` = details$overlap_pct, `State fixed effects` = details$fe_type,
+        `Standard errors` = details$se_spec, `Schooling adjustment` = details$schooling_adj,
+        `College adjustment` = if (details$apply_college_adj) details$college_coeff else "None",
+        `Mining threshold` = if (details$mining_filter_active) details$mining_threshold else "None",
+        `Spatial cutoff (km)` = if (details$se_spec == "spatial") details$spatial_cutoff else "Not used",
+        `MSA counties only` = if (is.null(details$county_msa_restriction)) "Not applicable" else as.character(details$county_msa_restriction),
+        `Water-access year` = details$water_year,
+        Controls = if (length(details$controls_vec)) paste(vapply(details$controls_vec, control_label, character(1)), collapse = "; ") else "None")
+      spec_html <- paste0("<dt>", esc(names(specifications)), "</dt><dd>", esc(as.character(specifications)), "</dd>", collapse = "")
+      html <- paste0('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agglomeration results</title>',
+        '<style>body{font-family:Arial,sans-serif;color:#000000;max-width:1100px;margin:40px auto;padding:0 24px;line-height:1.5}h1{font-size:32px}img{max-width:100%}table{border-collapse:collapse;width:100%;font-size:14px}th,td{padding:7px 10px;text-align:right;border-bottom:1px solid #dddddd}.row-label{text-align:left}th{border-top:2px solid #000000}dt{font-weight:bold;margin-top:10px}dd{margin-left:0}.table-notes{font-size:12px;margin-top:15px}@media print{body{margin:0}}</style><body>',
+        '<h1>Agglomeration effects in the United States</h1><p>', esc(paste(details$analysis_level, details$year_modern, details$analysis_type, sep = ' · ')),
+        '</p><img alt="Density coefficient estimates and 95% confidence intervals" src="', chart_data, '">', table,
+        '<h2>Specification</h2><dl>', spec_html, '</dl><p>New geographic controls cover the contiguous US. Missing values are excluded. Shoreline is a modern proxy; portage access is approximate.</p></body></html>')
+      writeLines(html, file, useBytes = TRUE)
+    })
+
 }
 
-# --- 7. Run the Application ---
 shinyApp(ui = ui, server = server)

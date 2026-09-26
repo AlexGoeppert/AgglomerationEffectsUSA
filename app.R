@@ -150,6 +150,7 @@ resolve_geo_controls <- function(geo_groups = character(), water_groups = charac
 }
 
 control_label <- function(variable) {
+  if (variable == "ch_elasticity") return("Ciccone–Hall elasticity (theta − 1)")
   labels <- c(fit_RHS = "Log employment density (instrumented)", RHS = "Log employment density",
               instrument = "Historical density instrument", `(Intercept)` = "Constant",
               water_1820 = "Legacy water access, 1820", railroads_1840 = "Railroads, 1840",
@@ -175,10 +176,201 @@ control_label <- function(variable) {
   variable
 }
 
+# The CH term uses county employment and land area within each MSA.
+ch_index_terms <- function(theta, employment, area) {
+  positive <- employment > 0
+  log_density <- matrix(0, nrow(employment), ncol(employment))
+  log_density[positive] <- log(employment[positive] / area[positive])
+  log_weight <- matrix(-Inf, nrow(employment), ncol(employment))
+  log_weight[positive] <- log(employment[positive]) + (theta - 1) * log_density[positive]
+  largest <- apply(log_weight, 1L, max)
+  weight <- exp(log_weight - largest)
+  total <- rowSums(weight)
+  derivative <- rowSums(weight * log_density) / total
+  list(value = largest + log(total) - log(rowSums(employment)),
+       derivative = derivative,
+       second_derivative = rowSums(weight * (log_density - derivative)^2) / total)
+}
+
+fit_ch_model <- function(data, dep_var, controls_vec = character(), fe_part = "0",
+                         method = c("IV", "OLS"), se_spec = "robust",
+                         n_cols = grep("^nc[0-9]+$", names(data), value = TRUE),
+                         a_cols = sub("^nc", "ac", n_cols)) {
+  method <- match.arg(method)
+  if (!se_spec %in% c("robust", "cluster_instrument", "cluster_state")) {
+    stop("The CH model supports robust or clustered standard errors. Select one of these options.")
+  }
+  if (!length(n_cols) || length(n_cols) != length(a_cols)) stop("County components for the CH index are unavailable.")
+  cluster_col <- switch(se_spec, cluster_instrument = "clusterID", cluster_state = "state_id", NULL)
+  has_fe <- !is.null(fe_part) && !identical(as.character(fe_part), "0")
+  variables <- unique(c(dep_var, controls_vec, n_cols, a_cols,
+                        if (has_fe) fe_part, if (method == "IV") "instrument", cluster_col))
+  absent <- setdiff(variables, names(data))
+  if (length(absent)) stop(paste("CH model variables are unavailable:", paste(absent, collapse = ", ")))
+  for (variable in controls_vec) {
+    if (!is.numeric(data[[variable]])) {
+      source <- trimws(as.character(data[[variable]]))
+      converted <- suppressWarnings(as.numeric(source))
+      if (any(is.na(converted) & !is.na(source) & !source %in% c("", "."))) {
+        stop(paste("The CH control must contain numbers:", variable))
+      }
+      data[[variable]] <- converted
+    }
+  }
+  valid <- complete.cases(data[variables])
+  numeric_vars <- variables[vapply(data[variables], is.numeric, logical(1))]
+  for (variable in numeric_vars) valid <- valid & is.finite(data[[variable]])
+  employment <- as.matrix(data[n_cols])
+  area <- as.matrix(data[a_cols])
+  valid <- valid & rowSums(employment < 0, na.rm = TRUE) == 0 &
+    rowSums(area <= 0, na.rm = TRUE) == 0 & rowSums(employment, na.rm = TRUE) > 0
+  if ("ch_complete" %in% names(data)) valid <- valid & !is.na(data$ch_complete) & data$ch_complete == 1
+  rows <- which(valid)
+  if (!length(rows)) stop("No observations have complete county components and selected CH model variables.")
+  d <- data[rows, , drop = FALSE]
+  employment <- employment[rows, , drop = FALSE]
+  area <- area[rows, , drop = FALSE]
+  y <- d[[dep_var]]
+  singleton_n <- 0L
+  if (has_fe) {
+    fixed_effect <- factor(d[[fe_part]])
+    singleton_n <- as.integer(sum(table(fixed_effect) == 1L))
+    X <- diag(nlevels(fixed_effect))[as.integer(fixed_effect), , drop = FALSE]
+    colnames(X) <- paste0(".fe_", levels(fixed_effect))
+  } else {
+    X <- matrix(1, nrow(d), 1L, dimnames = list(NULL, "(Intercept)"))
+  }
+  X <- cbind(X, as.matrix(d[controls_vec]))
+  storage.mode(X) <- "double"
+  scales <- sqrt(colSums(X^2))
+  scales[scales == 0] <- 1
+  design_qr <- qr(sweep(X, 2L, scales, "/"), tol = 1e-10)
+  selected <- sort(design_qr$pivot[seq_len(design_qr$rank)])
+  omitted <- setdiff(colnames(X), colnames(X)[selected])
+  if (length(omitted)) warning(paste("CH model omitted collinear controls:", paste(omitted, collapse = ", ")), call. = FALSE)
+  X <- X[, selected, drop = FALSE]
+  scales <- scales[selected]
+  Xs <- sweep(X, 2L, scales, "/")
+  design_qr <- qr(Xs, tol = 1e-10)
+  n <- length(y)
+  k <- ncol(X) + 1L
+  if (n <= k) stop("Too few observations remain for the selected CH model and fixed effects.")
+  partial <- function(x) qr.resid(design_qr, x)
+  yr <- partial(y)
+  index <- function(theta) ch_index_terms(theta, employment, area)
+  objective <- function(theta) sum((yr - partial(index(theta)$value))^2)
+  theta_grid <- sort(unique(c(1e-7, seq(0.05, 3, by = 0.05), 4, 8, 16, 32)))
+  rss_grid <- vapply(theta_grid, objective, numeric(1))
+  best <- which.min(rss_grid)
+  if (best %in% c(1L, length(theta_grid))) stop("The CH least-squares solution is at the search boundary; this specification is not identified reliably.")
+  nls_fit <- optimize(objective, interval = theta_grid[c(best - 1L, best + 1L)], tol = 1e-11)
+  theta <- nls_fit$minimum
+  if (method == "IV") {
+    zr <- partial(d$instrument)
+    if (sqrt(sum(zr^2)) <= 1e-10 * max(1, sqrt(sum(d$instrument^2)))) {
+      stop("The historical instrument has no variation after the selected controls and fixed effects.")
+    }
+    zr <- zr / sqrt(sum(zr^2))
+    moment <- function(theta) sum(zr * (yr - partial(index(theta)$value)))
+    moment_grid <- vapply(theta_grid, moment, numeric(1))
+    crossings <- which(head(moment_grid, -1L) * tail(moment_grid, -1L) <= 0)
+    if (!length(crossings)) stop("The nonlinear IV moment has no positive-theta solution for this specification.")
+    roots <- vapply(crossings, function(j) uniroot(moment, interval = theta_grid[c(j, j + 1L)], tol = 1e-11)$root, numeric(1))
+    roots <- roots[!duplicated(round(roots, 8L))]
+    if (length(roots) > 1L) warning("The nonlinear IV model has multiple solutions. The solution closest to the NLS estimate is shown.", call. = FALSE)
+    theta <- roots[which.min(abs(roots - theta))]
+  }
+  terms <- index(theta)
+  beta <- qr.coef(design_qr, y - terms$value) / scales
+  fitted <- terms$value + as.vector(X %*% beta)
+  residual <- y - fitted
+  derivative <- cbind(ch_elasticity = terms$derivative, X)
+  derivative_scale <- sqrt(colSums(derivative^2))
+  Js <- sweep(derivative, 2L, derivative_scale, "/")
+  if (qr(Js, tol = 1e-10)$rank < k) stop("The CH parameter is not identified separately from the selected controls and fixed effects.")
+  if (method == "IV") {
+    Z <- cbind(zr, Xs)
+    bread <- crossprod(Z, Js)
+    if (rcond(bread) < 1e-12) stop("The nonlinear IV derivative is too weak to estimate a reliable covariance matrix.")
+    influence <- sweep((Z * residual) %*% t(solve(bread)), 2L, derivative_scale, "/")
+  } else {
+    bread <- crossprod(Js)
+    influence <- sweep((Js * residual) %*% solve(bread), 2L, derivative_scale, "/")
+  }
+  groups <- NA_integer_
+  if (!is.null(cluster_col)) {
+    cluster <- factor(d[[cluster_col]])
+    groups <- nlevels(cluster)
+    if (groups < 2L) stop("At least two clusters are needed for clustered CH standard errors.")
+    influence <- rowsum(influence, cluster, reorder = FALSE)
+    correction <- if (method == "OLS") groups / (groups - 1) * (n - 1) / (n - k) else 1
+    df <- if (method == "OLS") groups - 1L else Inf
+  } else {
+    correction <- if (method == "OLS") n / (n - k) else 1
+    df <- if (method == "OLS") n - k else Inf
+  }
+  full_vcov <- crossprod(influence) * correction
+  dimnames(full_vcov) <- list(colnames(derivative), colnames(derivative))
+  full_coef <- c(ch_elasticity = theta - 1, beta)
+  exposed <- !startsWith(names(full_coef), ".fe_")
+  result <- list(coefficients = full_coef[exposed], covariance = full_vcov[exposed, exposed, drop = FALSE],
+                 theta = theta, residuals = residual, fitted.values = fitted,
+                 rows = rows, nobs = as.integer(n), df.residual = df,
+                 parameter_count = k, method = method, se_spec = se_spec,
+                 clusters = as.integer(groups), collin.var = omitted,
+                 singleton_n = singleton_n,
+                 inference = if (method == "IV") "Stata gmm: asymptotic normal inference; no small-sample covariance correction." else if (is.null(cluster_col)) "Stata nl: HC1 covariance; t inference with N minus parameter count degrees of freedom." else "Stata nl: cluster covariance with finite-sample correction; t inference with clusters minus one degrees of freedom.",
+                 full_coefficients = full_coef, full_covariance = full_vcov,
+                 index_value = terms$value, index_derivative = terms$derivative,
+                 objective = sum(residual^2), iv_moment = if (method == "IV") moment(theta) else NULL)
+  class(result) <- "ch_model"
+  result
+}
+
+coef.ch_model <- function(object, ...) object$coefficients
+vcov.ch_model <- function(object, ...) object$covariance
+nobs.ch_model <- function(object, ...) object$nobs
+residuals.ch_model <- function(object, ...) object$residuals
+fitted.ch_model <- function(object, ...) object$fitted.values
+confint.ch_model <- function(object, parm, level = 0.95, ...) {
+  if (missing(parm)) parm <- names(coef(object))
+  b <- coef(object)[parm]
+  se <- sqrt(diag(vcov(object)))[parm]
+  quantile <- if (is.finite(object$df.residual)) qt((1 + level) / 2, object$df.residual) else qnorm((1 + level) / 2)
+  result <- cbind(b - quantile * se, b + quantile * se)
+  colnames(result) <- paste0(format(100 * c((1 - level) / 2, (1 + level) / 2)), " %")
+  result
+}
+ch_coeftable <- function(model) {
+  estimate <- coef(model)
+  se <- sqrt(diag(vcov(model)))
+  statistic <- estimate / se
+  p <- if (is.finite(model$df.residual)) 2 * pt(abs(statistic), df = model$df.residual, lower.tail = FALSE) else 2 * pnorm(abs(statistic), lower.tail = FALSE)
+  cbind(Estimate = estimate, `Std. Error` = se, `t value` = statistic, `Pr(>|t|)` = p)
+}
+
+
+app_model_table <- function(model) {
+  if (inherits(model, "ch_model")) return(ch_coeftable(model))
+  fixest::coeftable(model)
+}
+app_model_rows <- function(model) {
+  if (inherits(model, "ch_model")) return(model$rows)
+  fixest::obs(model)
+}
+app_model_se <- function(model) sqrt(diag(stats::vcov(model)))
+app_model_pvalue <- function(model) app_model_table(model)[, 4]
+model_description <- function(details) {
+  if (identical(details$density_measure, "CH")) {
+    return(if (details$analysis_type == "IV") "Ciccone–Hall · nonlinear IV (GMM)" else "Ciccone–Hall · nonlinear least squares")
+  }
+  details$analysis_type
+}
+
 model_coefficients <- function(details) {
   rows <- lapply(names(details$models), function(model_name) {
     model <- details$models[[model_name]]
-    table <- fixest::coeftable(model)
+    table <- app_model_table(model)
     interval <- stats::confint(model, level = .95)
     terms <- rownames(table)
     data.frame(model = model_name, term = terms,
@@ -187,13 +379,15 @@ model_coefficients <- function(details) {
                statistic = table[, 3], p_value = table[, 4],
                conf_low = interval[terms, 1], conf_high = interval[terms, 2],
                observations = stats::nobs(model), geography = details$analysis_level,
-               year = details$year_modern, method = details$analysis_type,
+               year = details$year_modern, method = model_description(details),
+               density_measure = details$density_measure,
                stringsAsFactors = FALSE, row.names = NULL)
   })
   do.call(rbind, rows)
 }
 
 main_coefficient <- function(details) {
+  if (identical(details$density_measure, "CH")) return("ch_elasticity")
   switch(details$analysis_type, IV = "fit_RHS", OLS = "RHS", "instrument")
 }
 
@@ -209,8 +403,8 @@ result_plot <- function(details) {
     ggplot2::geom_point(color = "#000000", fill = "#ffffff", shape = 21, size = 4.5, stroke = 1.6) +
     ggplot2::scale_y_discrete(expand = ggplot2::expansion(add = .65)) +
     ggplot2::scale_x_continuous(expand = ggplot2::expansion(mult = .12)) +
-    ggplot2::labs(x = if (details$analysis_type == "First-stage Regression") "Historical density coefficient" else "Employment density coefficient",
-                  y = NULL, title = paste(details$analysis_level, "·", details$year_modern, "·", details$analysis_type),
+    ggplot2::labs(x = if (details$analysis_type == "First-stage Regression") "Historical density coefficient" else if (identical(details$density_measure, "CH")) "Ciccone–Hall elasticity (theta − 1)" else "Employment density coefficient",
+                  y = NULL, title = paste(details$analysis_level, "·", details$year_modern, "·", model_description(details)),
                   subtitle = "Point estimates and 95% confidence intervals",
                   caption = "Intervals use the selected standard-error specification.") +
     ggplot2::theme_minimal(base_size = 14, base_family = "sans") +
@@ -447,6 +641,10 @@ ui <- fluidPage(title = "Agglomeration Effects USA",
                  conditionalPanel(
                    condition = "input.analysis_level == 'MSA'",
                    h4("4. MSA Specific Settings"),
+                   selectInput("msa_density_measure", "Density measure:",
+                     c("MSA average density" = "average", "Ciccone–Hall index" = "CH"), "average"),
+                   conditionalPanel("input.msa_density_measure == 'CH'",
+                     p(class = "help-block", "Uses employment density within each MSA's county units. OLS runs nonlinear least squares; IV runs nonlinear GMM.")),
                    labeledInput("msa_sectors", "Sector:",
                                 selectInput("msa_sectors", NULL, c("All"=1, "Private"=2, "Manufacturing"=3, "Private non-farm"=4, "Private non-farm/mining"=5), 1),
                                 "help_msa_sectors", help_sectors),
@@ -590,8 +788,22 @@ server <- function(input, output, session) {
   analysis_output <- reactiveVal(NULL)
   map_output <- reactiveVal(NULL)
 
+  observeEvent(list(input$msa_density_measure, input$analysis_level), {
+    ch <- identical(input$analysis_level, "MSA") && identical(input$msa_density_measure, "CH")
+    methods <- if (ch) c("IV", "OLS") else c("IV", "OLS", "First-stage Regression")
+    selected <- isolate(input$analysis_type)
+    if (is.null(selected) || !selected %in% methods) selected <- "IV"
+    updateSelectInput(session, "analysis_type", choices = methods, selected = selected)
+    standard_errors <- c("Cluster on Instrument" = "cluster_instrument",
+      "Cluster on State" = "cluster_state", "Spatial (Conley)" = "spatial", "Robust" = "robust")
+    if (ch) standard_errors <- standard_errors[standard_errors != "spatial"]
+    selected_se <- isolate(input$msa_se_spec)
+    if (is.null(selected_se) || !selected_se %in% standard_errors) selected_se <- "cluster_instrument"
+    updateSelectInput(session, "msa_se_spec", choices = standard_errors, selected = selected_se)
+  }, ignoreInit = TRUE)
+
   estimated_sample <- function(model, details = analysis_output()) {
-    details$data_for_fs[fixest::obs(model), , drop = FALSE]
+    details$data_for_fs[app_model_rows(model), , drop = FALSE]
   }
 
   instrument_wald_f <- function(model) {
@@ -623,6 +835,8 @@ server <- function(input, output, session) {
           analysis_level <- input$analysis_level
           year_modern <- as.numeric(input$year_modern)
           analysis_type <- input$analysis_type
+          density_measure <- if (analysis_level == "MSA" && identical(input$msa_density_measure, "CH")) "CH" else "average"
+          if (density_measure == "CH" && !analysis_type %in% c("IV", "OLS")) stop("Choose IV or OLS for the Ciccone–Hall model.")
           use_fe <- input$use_fe
           fe_type <- input$fe_type
           sample_scope <- input$sample_scope
@@ -888,6 +1102,12 @@ server <- function(input, output, session) {
           sum(!Reduce(`&`, lapply(df[new_controls], is.finite)))
         } else 0L
 
+        ch_missing_n <- 0L
+        if (density_measure == "CH") {
+          if (!"ch_complete" %in% names(df)) stop("The MSA data do not contain the Ciccone–Hall county inputs. Rebuild the MSA data first.")
+          ch_missing_n <- sum(is.na(df$ch_complete) | df$ch_complete != 1)
+        }
+
         incProgress(0.5, detail = "Building regression models...")
         
         dep_vars_map <- list(
@@ -952,12 +1172,15 @@ server <- function(input, output, session) {
           )
           
           model <- withCallingHandlers(
-            feols(as.formula(formula_str), data = df, vcov = vcov_arg),
+            if (density_measure == "CH") {
+              fit_ch_model(data = df, dep_var = dep_var_name, controls_vec = controls_vec,
+                fe_part = fe_part, method = analysis_type, se_spec = se_spec)
+            } else feols(as.formula(formula_str), data = df, vcov = vcov_arg),
             warning = record_model_warning
           )
           models[[model_name]] <- model
           
-          if (analysis_type == "IV") {
+          if (analysis_type == "IV" && density_measure != "CH") {
             first_stage_models[[model_name]] <- withCallingHandlers(
               summary(model, stage = 1),
               warning = record_model_warning
@@ -969,7 +1192,7 @@ server <- function(input, output, session) {
         cluster_column <- switch(se_spec, cluster_instrument = "clusterID", cluster_state = "state_id", NULL)
         model_clusters <- vapply(models, function(model) {
           if (is.null(cluster_column)) return(NA_integer_)
-          values <- df[[cluster_column]][fixest::obs(model)]
+          values <- df[[cluster_column]][app_model_rows(model)]
           as.integer(length(unique(values[!is.na(values)])))
         }, integer(1))
 
@@ -980,6 +1203,8 @@ server <- function(input, output, session) {
           models = models,
           first_stage_models = first_stage_models,
           analysis_type = analysis_type,
+          density_measure = density_measure,
+          ch_missing_n = ch_missing_n,
           analysis_level = analysis_level,
           year_modern = year_modern,
           sectors = sectors,
@@ -1086,7 +1311,8 @@ server <- function(input, output, session) {
     escape <- function(x) as.character(htmltools::htmlEscape(x))
     model_names <- names(models)
     all_vars <- unique(unlist(lapply(models, function(model) names(coef(model)))))
-    main_var <- switch(analysis_type, IV = "fit_RHS", OLS = "RHS", "instrument")
+    is_ch <- inherits(models[[1]], "ch_model")
+    main_var <- if (is_ch) "ch_elasticity" else switch(analysis_type, IV = "fit_RHS", OLS = "RHS", "instrument")
     ordered_vars <- unique(c(intersect(main_var, all_vars), setdiff(all_vars, main_var)))
     cells <- function(values, css = "stats") {
       paste0('<td class="', css, '">', values, '</td>', collapse = "")
@@ -1101,11 +1327,11 @@ server <- function(input, output, session) {
     for (variable in ordered_vars) {
       estimates <- vapply(models, function(model) {
         if (!variable %in% names(coef(model))) return("—")
-        paste0(format_estimate(coef(model)[variable]), get_significance_stars(pvalue(model)[variable]))
+        paste0(format_estimate(coef(model)[variable]), get_significance_stars(app_model_pvalue(model)[variable]))
       }, character(1))
       uncertainties <- vapply(models, function(model) {
         if (!variable %in% names(coef(model))) return("")
-        paste0("(", format_estimate(se(model)[variable]), ")")
+        paste0("(", format_estimate(app_model_se(model)[variable]), ")")
       }, character(1))
       parts <- c(parts, row(control_label(variable), estimates, "coefficient"), row("", uncertainties, "se"))
     }
@@ -1127,6 +1353,9 @@ server <- function(input, output, session) {
     if (length(diagnostic_models)) {
       note <- paste0(note, ' Instrument Wald F is the squared t statistic for the excluded instrument, using the selected standard errors and the model sample.')
     }
+    if (is_ch) note <- paste0(note, ' Ciccone–Hall estimates theta in log[sum(n^theta a^(1−theta))/sum(n)], using county employment n and land area a. The reported elasticity is theta − 1. BEA combined county units are kept together.')
+    if (is_ch) note <- paste0(note, ' ', escape(models[[1]]$inference))
+    if (is_ch && any(vapply(models, function(m) m$singleton_n > 0L, logical(1)))) note <- paste0(note, ' As in Stata, CH retains states represented by one MSA; the linear model removes these observations.')
     if (se_spec == "spatial") note <- paste0(note, ' Conley standard errors use a uniform kernel.')
     parts <- c(parts, paste0('<div class="table-notes">', note, '</div>'))
     paste(parts, collapse = "\n")
@@ -1139,7 +1368,7 @@ server <- function(input, output, session) {
       "Analysis Error"
     } else {
       details <- analysis_output()
-      glue("{details$analysis_level} results · {details$analysis_type}")
+      paste(details$analysis_level, "results ·", model_description(details))
     }
   })
   
@@ -1222,7 +1451,7 @@ server <- function(input, output, session) {
     detail_sections$core <- paste0(
       '<strong>Analysis Level:</strong> ', details$analysis_level, '<br>',
       '<strong>Modern Year:</strong> ', details$year_modern, '<br>',
-      '<strong>Analysis Method:</strong> ', details$analysis_type, '<br>',
+      '<strong>Analysis Method:</strong> ', model_description(details), '<br>',
       '<strong>Sector:</strong> ', get_sector_name(details$sectors), '<br>'
     )
     
@@ -1268,7 +1497,8 @@ server <- function(input, output, session) {
       '<strong>Standard Errors:</strong> ', se_description, '<br>',
       '<strong>Observations used:</strong> ', if (length(unique(details$model_n)) == 1L) format(details$model_n[[1]], big.mark = ',') else paste(names(details$model_n), format(details$model_n, big.mark = ','), sep = ': ', collapse = '; '), '<br>',
       '<strong>Eligible before control and model exclusions:</strong> ', format(details$eligible_n, big.mark = ','), '<br>',
-      '<strong>Missing selected geographic controls:</strong> ', format(details$geo_missing_n, big.mark = ',')
+      '<strong>Missing selected geographic controls:</strong> ', format(details$geo_missing_n, big.mark = ','),
+      if (identical(details$density_measure, 'CH')) paste0('<br><strong>Incomplete county inputs:</strong> ', details$ch_missing_n) else ''
     )
     
     # Combine all sections
@@ -1336,11 +1566,11 @@ server <- function(input, output, session) {
     sample_text <- if (length(unique(n)) == 1) format(n[1], big.mark = ",") else paste(format(range(n), big.mark = ","), collapse = "–")
     metric <- function(label, value, note) div(class = "metric-card", div(class = "metric-label", label), div(class = "metric-value", value), div(class = "metric-detail", note))
     tagList(div(class = "metric-grid",
-      metric("Density coefficient", if (nrow(primary)) sprintf("%.3f", primary$estimate[1]) else "Unavailable",
+      metric(if (identical(details$density_measure, "CH")) "Ciccone–Hall elasticity" else "Density coefficient", if (nrow(primary)) sprintf("%.3f", primary$estimate[1]) else "Unavailable",
              if (nrow(primary)) primary$model[1] else "Not identified in this sample"),
       metric("95% interval", if (nrow(primary)) sprintf("%.3f to %.3f", primary$conf_low[1], primary$conf_high[1]) else "—", "Using the chosen standard errors"),
       metric("Observations", sample_text, paste(length(details$models), if (length(details$models) == 1) "model" else "models")),
-      metric("Modern year", as.character(details$year_modern), paste(details$analysis_level, "·", details$analysis_type))),
+      metric("Modern year", as.character(details$year_modern), paste(details$analysis_level, "·", model_description(details)))),
       div(class = "estimate-caption", "The chart compares the selected schooling adjustments. The table contains every estimated coefficient."))
   })
 
@@ -1355,6 +1585,8 @@ server <- function(input, output, session) {
     selected <- details$new_controls
     omitted <- unique(unlist(lapply(details$models, function(m) m$collin.var)))
     notices <- list()
+    if (isTRUE(details$ch_missing_n > 0L)) notices <- c(notices, list(p(paste(details$ch_missing_n,
+      "eligible observations have incomplete county employment or land area for the Ciccone–Hall model."))))
     if (missing_geo > 0) notices <- c(notices, list(p(paste(format(missing_geo, big.mark = ","),
       "eligible observations have missing values in the selected geographic controls. Missing values are excluded, never set to zero."))))
     if (length(unique(counts)) > 1) notices <- c(notices, list(p("The models use different sample sizes because their required values differ.")))
@@ -1407,7 +1639,7 @@ server <- function(input, output, session) {
         details$cluster_data, details$first_stage_models, details$data_for_fs, details$controls_vec, details$fe_part, details$vcov_arg,
         model_clusters = details$model_clusters)
       esc <- htmltools::htmlEscape
-      specifications <- c(Geography = details$analysis_level, Method = details$analysis_type, `Modern year` = details$year_modern,
+      specifications <- c(Geography = details$analysis_level, Method = model_description(details), `Modern year` = details$year_modern,
         Sector = c("All", "Private", "Manufacturing", "Private non-farm", "Private non-farm/mining")[details$sectors],
         `Historical sample year` = details$sample_year, `Instrument year` = details$iv_year,
         `Historical territory` = details$sample_scope, `Instrument construction` = details$instrument_type,
@@ -1422,7 +1654,7 @@ server <- function(input, output, session) {
       spec_html <- paste0("<dt>", esc(names(specifications)), "</dt><dd>", esc(as.character(specifications)), "</dd>", collapse = "")
       html <- paste0('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agglomeration results</title>',
         '<style>body{font-family:Arial,sans-serif;color:#000000;max-width:1100px;margin:40px auto;padding:0 24px;line-height:1.5}h1{font-size:32px}img{max-width:100%}table{border-collapse:collapse;width:100%;font-size:14px}th,td{padding:7px 10px;text-align:right;border-bottom:1px solid #dddddd}.row-label{text-align:left}th{border-top:2px solid #000000}dt{font-weight:bold;margin-top:10px}dd{margin-left:0}.table-notes{font-size:12px;margin-top:15px}@media print{body{margin:0}}</style><body>',
-        '<h1>Agglomeration effects in the United States</h1><p>', esc(paste(details$analysis_level, details$year_modern, details$analysis_type, sep = ' · ')),
+        '<h1>Agglomeration effects in the United States</h1><p>', esc(paste(details$analysis_level, details$year_modern, model_description(details), sep = ' · ')),
         '</p><img alt="Density coefficient estimates and 95% confidence intervals" src="', chart_data, '">', table,
         '<h2>Specification</h2><dl>', spec_html, '</dl><p>New geographic controls cover the contiguous US. Missing values are excluded. Shoreline is a modern proxy; portage access is approximate.</p></body></html>')
       writeLines(html, file, useBytes = TRUE)

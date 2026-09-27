@@ -12,11 +12,34 @@ library(ggplot2)
 
 # --- 2. Load Data on Startup --------------------------------------------------
 
+read_app_data <- function(path, level) {
+  common <- c("year", "modern_state_fe", "simple_gamma", "Minc_return_calc",
+    "employment_private_nonfarm", "employment_mining", "water_1820",
+    "railroads_1840", "railroads_1850", "railroads_1861")
+  specific <- if (level == "MSA") c("msafips", "msaname", "lat_DD", "lon_DD",
+    "msa_schooling_09", "college_share_09", "employment", "msaarea", "ln_output_worker", "ln_output_worker_private",
+    "gmp", "gmp_private_industry", "gmp_agriculture", "gmp_mining", "gmp_indstryid_12", "emply_indryid_500")
+  else c("geofips", "geoname", "lat", "lon", "avg_schooling_10_14", "college_share",
+    "employment_total", "area_acre", "gcp_total", "gcp_private_industry", "gcp_agriculture", "gcp_mining",
+    "gcp_indstryid_12", "emply_c_indryid_70", "emply_c_indryid_500", "county_partof_MSA")
+  available <- names(haven::read_dta(path, n_max = 0))
+  missing <- setdiff(c(common, specific), available)
+  if (length(missing)) stop(paste("Required data fields are missing:", paste(missing, collapse = ", ")))
+  patterns <- c("^hist_state_fe_[0-9]{4}(_s)?$", "^GGpop_[0-9]{4}(_s)?$",
+    "^(rugged_mean|elev_mean|gaez_wheat_suit|gaez_maize_suit|tjan|tjul|precip|ocean_access10|lakes_access10|portage_access10)$",
+    "^(river_access_|canal_access_|ln1p_dist_)")
+  patterns <- c(patterns, if (level == "MSA") c("^MSAol_[0-9]{4}_(5|[1-9]0)(_s)?$",
+    "^MSApop(id)?_[0-9]{4}_(5|[1-9]0)(_s)?$", "^(nc|ac)[0-9]+$", "^ch_complete$")
+    else c("^iv_overlap_(max_)?(5|[1-9]0)_[0-9]{4}(_s)?$", "^ivpop(id)?_overlap_max_(5|[1-9]0)_[0-9]{4}(_s)?$"))
+  selected <- unique(c(common, specific, grep(paste(patterns, collapse = "|"), available, value = TRUE)))
+  haven::read_dta(path, col_select = tidyselect::all_of(selected))
+}
+
 tryCatch({
-  msa_data    <- haven::read_dta("MSA_analysis_data.dta")
-  county_data <- haven::read_dta("master_county_build.dta")
+  msa_data    <- read_app_data("MSA_analysis_data.dta", "MSA")
+  county_data <- read_app_data("master_county_build.dta", "County")
 }, error = function(e) {
-  stop("Error: Make sure 'MSA_analysis_data.dta' and 'master_county_build.dta' are in the same directory as app.R")
+  stop(paste("Could not load the app datasets:", conditionMessage(e)))
 })
 
 # --- 3. Territory Filtering Function ------------------------------------------
@@ -43,11 +66,15 @@ get_territory_exclusions <- function(data, fe_column_name, id_column) {
 # Master settings
 help_analysis_level      <- "Pick the geography to study: metropolitan statistical areas (MSAs) or counties."
 help_year_modern         <- "Year in which modern productivity and employment are measured."
+help_approach <- paste(
+  "Employment density uses log total employment per unit of area, or the Ciccone–Hall index for MSAs.",
+  "2b) Employment uses log total employment, without dividing by area. Its instrument is historical population divided by 1,000.",
+  "The selected matching method determines which historical county populations are used. Outcomes, controls and schooling adjustments keep their existing definitions.", sep = "\n")
 help_analysis_type       <- paste(
   "Estimation method:",
-  " • OLS – ordinary least squares regression of modern productivity on modern employment density. ",
-  " • IV – instrumental variables regression using historical population density as an instrument for modern density. ",
-  " • First-stage regression – ordinary least squares regression of modern employment density on historical population density.",
+  " • OLS – regress modern productivity on the employment measure selected under Approach.",
+  " • IV – instrument that employment measure with the selected historical population or density measure.",
+  " • First-stage regression – regress the selected modern employment measure on the historical instrument.",
   sep = "\n")
 
 # Fixed effects & scope
@@ -60,10 +87,9 @@ help_sample_scope        <- paste(
   sep = "\n")
 
 # Standardized settings (used for both MSA and County)
-help_sectors             <- "Select whether modern productivity (output per worker) used as the left-hand-side outcome is measured for the whole economy, the private economy, etc. The Right-hand-side employment density always refers to total employment. "
+help_sectors             <- "Select whether modern productivity (output per worker) is measured for the whole economy, the private economy, etc. The employment measure on the right-hand side always uses total employment."
 help_sample_year         <- "Defines which modern geographic units are included in the empirical analysis."
-help_iv_year             <- "Defines which historical census is used to obtain historical population density (the instrument for modern employment density)."
-help_controls            <- "Add indicator variables for whether the geographic unit has access to waterways in 1820 (ocean, lakes, rivers, canals) or railroads in 1840, 1850, or 1861."
+help_iv_year             <- "Selects the historical census year used for the population or density instrument. The Approach and matching method determine how that population enters the regression."
 help_schooling_adj       <- paste(
   "Adjust productivity for schooling using Mincerian return to schooling:",
   " • None – no adjustment.",
@@ -77,7 +103,7 @@ help_mining_filter_active<- "Exclude geographic units whose share of mining in G
 help_mining_threshold    <- "Drops all geographic units with a share of mining in GDP above the chosen level."
 help_se_spec             <- paste(
   "Standard‑error option:",
-  " • Cluster by historical instrument – clusters by common historical instrument.",
+  " • Cluster by historical instrument – groups observations sharing an instrument. Under 2b overlap, groups share the same selected historical county. County matching clusters by the modern MSA or county.",
   " • Cluster by state – clusters at the modern state level. ",
   " • Spatial correlation (Conley standard errors) – distance based correction using uniform kernel and a distance cutoff (distance cutoff chosen below).",
   " • Robust – heteroskedasticity robust standard errors.",
@@ -90,20 +116,43 @@ help_spatial_kernel      <- "Uniform kernel with constant weight within cutoff d
 # MSA‑specific settings
 help_msa_instrument_type     <- paste(
   "How to construct the historical instrument:",
-  " Overlap – maximum population density among all historical counties with at least X% of their territory overlapping with the modern geographic unit (X% is chosen below). ",
-  " Glaeser and Gottlieb (2009) – aggregate historical county populations to MSAs and use the natural log of the total population. Here, whole historical counties are matched to the project's current MSA county list and their populations are added: ln(sum of population). We use the selected historical year, without area-overlap weights. Zero or unknown totals have no log value.",
-  " The paper's Data Appendix describes county-to-MSA aggregation, and the archived JEL Table 4 code confirms log population. The historical county matching is reconstructed from the surviving data and code; their complete matching script is unavailable.",
+  " Overlap – selects the historical county with the highest population density among counties with at least the chosen percentage of their territory overlapping the modern MSA. Employment density uses that county's density; 2b) Employment uses its full population divided by 1,000, without area weights.",
+  " Glaeser and Gottlieb (2009) – historical county identities are matched to current county identities and then to the project's current MSA county membership. Whole historical county populations are summed for the selected census year and territory scope, without area weights. The instrument is this total divided by 1,000 (thousands of people).",
+  " Counties without a reliable match are left unresolved. A missing population for a matched county or a known source gap makes the MSA total unavailable.",
   sep = "\n")
 help_msa_overlap_pct         <- "Minimum % of a historical county's area that must overlap with the MSA."
 
 # County‑specific settings
 help_county_msa_restriction  <- "Keep only counties that belong to a modern MSA."
 help_county_instrument_type  <- paste(
-  "Historical density instrument construction:",
-  " • Max density overlap  – maximum population density among all historical counties with at least X% of their territory overlapping with the modern geographic unit (X% is chosen below). ",
-  " • Weighted density overlap – average population density weighted by overlap using all historical counties with at least X% of their territory overlapping with the modern geographic unit (X% is chosen below)",
+  "How to construct the historical instrument:",
+  " • Max density overlap – selects the historical county with the highest population density among counties meeting the chosen overlap percentage. Employment density uses that county's density; 2b) Employment uses its full population divided by 1,000, without area weights.",
+  " • Weighted density overlap – averages historical county densities using area-overlap weights. This option is available for employment density only.",
+  " • Glaeser and Gottlieb (2009) – matches historical county identities to the project's current county units and sums their full populations for the selected census year and territory scope. The instrument is the total divided by 1,000, without area weights. Uncertain matches remain unresolved; missing matched populations or known source gaps make the total unavailable.",
   sep = "\n")
 help_county_overlap_threshold <- "Minimum % of a historical county's area that must overlap with the modern county"
+
+geographic_notes <- c(
+  "Combined water access, 1820" = "One yes/no indicator for whether any part of the county or MSA overlaps the project's original coast, river and canal access map. The river and canal layers already contain buffers, whose width is not documented. The separate water-access measures below use an explicit 10 km distance.",
+  "Railroads" = "Each selected year adds a separate yes/no indicator: 1 if a mapped railroad intersects the county or MSA in 1840, 1850 or 1861, and 0 otherwise. It measures the presence of a railroad, not the length of the network or distance to a station.",
+  "Ruggedness and elevation" = "Adds two variables: terrain ruggedness (how uneven the terrain is) and mean elevation (height above sea level), both in metres. Nunn-Puga ruggedness and PRISM elevation are averaged over the county or MSA using geographic area weights, without population weights.",
+  "Wheat and maize suitability" = "Adds separate GAEZ suitability indices for wheat and maize, averaged over the county or MSA using area weights. They describe rainfed production with low inputs under 1981-2010 conditions. Source values run from 0 to 10,000; higher values mean greater suitability. In the regression, both indices are divided by 1,000, so each coefficient refers to a 1,000-point increase in the source index.",
+  "Temperature and precipitation" = "Adds three area-weighted PRISM averages: January temperature and July temperature in degrees Celsius, and annual precipitation in millimetres. These describe long-run climate in 1991-2020, independently of the selected modern or historical census year.",
+  "Ocean and Great Lakes access" = "Adds two separate yes/no indicators. Each equals 1 if any part of the county or MSA is within 10 km of the ocean shoreline or Great Lakes shoreline, and 0 otherwise. The shorelines use modern Census geography.",
+  "Historical river and canal access" = "Adds two separate yes/no indicators for access within 10 km of a river segment with documented steamboat operation and a canal operating in the selected waterway year. Distance is measured from the nearest part of the county or MSA. This river measure covers documented steamboat routes.",
+  "Distance to shores and waterways" = "Adds four separate distances: ocean, Great Lakes, operating rivers and operating canals. Each runs from the county's or MSA's geometric centre to the nearest feature. The regression uses ln(1 + distance in kilometres), so larger values mean greater distance. The centre is based on geography, without population weights.",
+  "Approximate portage access" = "One yes/no indicator for whether any part of the county or MSA is within 10 km of a potential portage location near the boundary between the Coastal Plain and Piedmont. Locations are inferred from river geography and have not been verified as historical portages.",
+  "Waterway reference year" = "Changes only the historical river and canal access and distance measures. It is independent of the historical population instrument and sample years. Combined Water Access 1820 and the railroad controls keep their stated years; modern shorelines and approximate portage locations also stay fixed.",
+  "Coverage and sample size" = "Terrain, crop, climate and the separate water measures cover the contiguous United States. Area averages use grid cells with available values; areas with no usable coverage remain missing. Unknown operating dates can also leave water measures missing. Observations with missing values in selected controls are excluded from the regression, so adding controls can reduce the sample. Missing values are never treated as zero."
+)
+
+geographic_help <- function(measures) {
+  tagList(lapply(measures, function(measure)
+    p(tags$strong(paste0(measure, ": ")), geographic_notes[[measure]])))
+}
+help_controls <- geographic_help(c("Combined water access, 1820", "Railroads"))
+help_geo_controls <- geographic_help(c("Ruggedness and elevation", "Wheat and maize suitability", "Temperature and precipitation"))
+help_water_controls <- geographic_help(c("Ocean and Great Lakes access", "Historical river and canal access", "Distance to shores and waterways", "Approximate portage access"))
 
 # --- Helper for labelled inputs ----------------------------------------------
 
@@ -152,22 +201,40 @@ resolve_geo_controls <- function(geo_groups = character(), water_groups = charac
 }
 
 is_county_population <- function(details) {
-  identical(details$analysis_level, "MSA") && identical(details$instrument_type, "county_population")
+  identical(details$instrument_type, "county_population")
 }
 
-instrument_name <- function(type) {
-  switch(type, county_population = "Glaeser and Gottlieb (2009), county aggregation",
+uses_population_instrument <- function(details) {
+  is_county_population(details) || identical(details$approach, "employment")
+}
+
+approach_name <- function(approach) {
+  if (identical(approach, "employment")) "2b) Employment" else "Employment density"
+}
+
+instrument_cluster_label <- function(details) {
+  if (is_county_population(details)) paste(details$analysis_level, "clusters")
+  else if (identical(details$approach, "employment")) "Historical county clusters"
+  else "Instrument clusters"
+}
+
+instrument_name <- function(type, approach = "density") {
+  if (identical(approach, "employment") && type %in% c("overlap", "max_density_overlap"))
+    return("Overlap (density-selected county population)")
+  switch(type, county_population = "Glaeser and Gottlieb (2009)",
     overlap = "Overlap", max_density_overlap = "Max Density Overlap",
     weighted_density_overlap = "Weighted Density Overlap", type)
 }
 
-control_label <- function(variable, instrument_type = NULL) {
-  if (variable == "instrument" && identical(instrument_type, "county_population"))
-    return("Log historical population")
+control_label <- function(variable, instrument_type = NULL, approach = "density") {
+  if (variable == "instrument" && (identical(instrument_type, "county_population") || identical(approach, "employment")))
+    return("Historical population (thousands of people)")
+  if (identical(approach, "employment") && variable %in% c("RHS", "fit_RHS"))
+    return(if (variable == "fit_RHS") "Log employment (instrumented)" else "Log employment")
   if (variable == "ch_elasticity") return("Ciccone–Hall elasticity (theta − 1)")
   labels <- c(fit_RHS = "Log employment density (instrumented)", RHS = "Log employment density",
               instrument = "Historical density instrument", `(Intercept)` = "Constant",
-              water_1820 = "Legacy water access, 1820", railroads_1840 = "Railroads, 1840",
+              water_1820 = "Combined water access, 1820", railroads_1840 = "Railroads, 1840",
               railroads_1850 = "Railroads, 1850", railroads_1861 = "Railroads, 1861",
               rugged_mean = "Terrain ruggedness (m)", elev_mean = "Mean elevation (m)",
               gaez_wheat_suit = "Wheat suitability (per 1,000 points)",
@@ -388,13 +455,13 @@ model_coefficients <- function(details) {
     interval <- stats::confint(model, level = .95)
     terms <- rownames(table)
     data.frame(model = model_name, term = terms,
-               label = vapply(terms, control_label, character(1), instrument_type = details$instrument_type),
+               label = vapply(terms, control_label, character(1), instrument_type = details$instrument_type, approach = details$approach),
                estimate = table[, 1], std_error = table[, 2],
                statistic = table[, 3], p_value = table[, 4],
                conf_low = interval[terms, 1], conf_high = interval[terms, 2],
                observations = stats::nobs(model), geography = details$analysis_level,
                year = details$year_modern, method = model_description(details),
-               density_measure = details$density_measure,
+               density_measure = details$density_measure, approach = approach_name(details$approach),
                stringsAsFactors = FALSE, row.names = NULL)
   })
   do.call(rbind, rows)
@@ -408,7 +475,7 @@ main_coefficient <- function(details) {
 result_plot <- function(details) {
   estimates <- model_coefficients(details)
   estimates <- estimates[estimates$term == main_coefficient(details), , drop = FALSE]
-  if (!nrow(estimates)) stop("The density coefficient could not be estimated for this specification.")
+  if (!nrow(estimates)) stop("The selected coefficient could not be estimated for this specification.")
   estimates$model <- factor(estimates$model, levels = rev(names(details$models)))
   ggplot2::ggplot(estimates, ggplot2::aes(x = estimate, y = model)) +
     ggplot2::geom_vline(xintercept = 0, color = "#999999", linetype = "dashed", linewidth = .5) +
@@ -418,9 +485,9 @@ result_plot <- function(details) {
     ggplot2::scale_y_discrete(expand = ggplot2::expansion(add = .65)) +
     ggplot2::scale_x_continuous(expand = ggplot2::expansion(mult = .12)) +
     ggplot2::labs(x = if (details$analysis_type == "First-stage Regression") {
-                    if (is_county_population(details)) "Log historical population coefficient" else "Historical density coefficient"
-                  } else if (identical(details$density_measure, "CH")) "Ciccone–Hall elasticity (theta − 1)" else "Employment density coefficient",
-                  y = NULL, title = paste(details$analysis_level, "·", details$year_modern, "·", model_description(details)),
+                    if (uses_population_instrument(details)) "Historical population coefficient (per 1,000 people)" else "Historical density coefficient"
+                  } else if (identical(details$density_measure, "CH")) "Ciccone–Hall elasticity (theta − 1)" else if (identical(details$approach, "employment")) "Log employment coefficient" else "Employment density coefficient",
+                  y = NULL, title = paste(details$analysis_level, "·", details$year_modern, "·", approach_name(details$approach), "·", model_description(details)),
                   subtitle = "Point estimates and 95% confidence intervals",
                   caption = "Intervals use the selected standard-error specification.") +
     ggplot2::theme_minimal(base_size = 14, base_family = "sans") +
@@ -633,6 +700,9 @@ ui <- fluidPage(title = "Agglomeration Effects USA",
                  
                  # ── 2. Analysis Settings ───────────────────────────────
                  h4("2. Analysis Settings"),
+                 labeledInput("approach", "Approach:",
+                              selectInput("approach", NULL, c("Employment density" = "density", "2b) Employment" = "employment"), "density"),
+                              "help_approach", help_approach),
                  labeledInput("analysis_type", "Analysis Method:",
                               selectInput("analysis_type", NULL, c("IV", "OLS", "First-stage Regression"), "IV"),
                               "help_analysis_type", help_analysis_type),
@@ -657,9 +727,10 @@ ui <- fluidPage(title = "Agglomeration Effects USA",
                  conditionalPanel(
                    condition = "input.analysis_level == 'MSA'",
                    h4("4. MSA Specific Settings"),
-                   selectInput("msa_density_measure", "Density measure:",
-                     c("MSA average density" = "average", "Ciccone–Hall index" = "CH"), "average"),
-                   conditionalPanel("input.msa_density_measure == 'CH'",
+                   conditionalPanel("input.approach != 'employment'",
+                     selectInput("msa_density_measure", "Density measure:",
+                       c("MSA average density" = "average", "Ciccone–Hall index" = "CH"), "average")),
+                   conditionalPanel("input.approach != 'employment' && input.msa_density_measure == 'CH'",
                      p(class = "help-block", "Uses employment density within each MSA's county units. OLS runs nonlinear least squares; IV runs nonlinear GMM.")),
                    labeledInput("msa_sectors", "Sector:",
                                 selectInput("msa_sectors", NULL, c("All"=1, "Private"=2, "Manufacturing"=3, "Private non-farm"=4, "Private non-farm/mining"=5), 1),
@@ -678,9 +749,6 @@ ui <- fluidPage(title = "Agglomeration Effects USA",
                    labeledInput("msa_overlap_pct", "Overlap %:",
                                 selectInput("msa_overlap_pct", NULL, c(5,10,20,30,40,50,60,70,80,90), 5),
                                 "help_msa_overlap_pct", help_msa_overlap_pct)),
-                   labeledInput("msa_controls", "Control Variables:",
-                                checkboxGroupInput("msa_controls", NULL, c("Water Access 1820"="water_1820", "Railroads 1840"="railroads_1840", "Railroads 1850"="railroads_1850", "Railroads 1861"="railroads_1861"), c("water_1820", "railroads_1840")),
-                                "help_msa_controls", help_controls),
                    labeledInput("msa_schooling_adj", "Modern Adjustment for Human Capital",
                                 selectInput("msa_schooling_adj", NULL, c("None"=0, "Same Return"=1, "Specific Return"=2, "Run Both"=3), 3),
                                 "help_msa_schooling_adj", help_schooling_adj),
@@ -721,18 +789,16 @@ ui <- fluidPage(title = "Agglomeration Effects USA",
                    labeledInput("county_sample_year", "Year of the Historical Territory:",
                                 selectInput("county_sample_year", NULL, seq(1790, 1860, 10), 1790),
                                 "help_county_sample_year", help_sample_year),
-                   labeledInput("county_iv_year", "Year of the Historical Population Density (Historical Census Year):",
+                   labeledInput("county_iv_year", textOutput("county_iv_year_label", inline = TRUE),
                                 selectInput("county_iv_year", NULL, seq(1790, 1860, 10), 1840),
                                 "help_county_iv_year", help_iv_year),
                    labeledInput("county_instrument_type", "Match of Historical to Modern Geographic Units:",
-                                selectInput("county_instrument_type", NULL, c("Max Density Overlap"="max_density_overlap", "Weighted Density Overlap"="weighted_density_overlap"), "max_density_overlap"),
+                                selectInput("county_instrument_type", NULL, c("Max Density Overlap"="max_density_overlap", "Weighted Density Overlap"="weighted_density_overlap", "Glaeser and Gottlieb (2009)"="county_population"), "max_density_overlap"),
                                 "help_county_instrument_type", help_county_instrument_type),
+                   conditionalPanel("input.county_instrument_type != 'county_population'",
                    labeledInput("county_overlap_threshold", "Overlap Threshold %:",
                                 selectInput("county_overlap_threshold", NULL, c(5,10,20,30,40,50,60,70,80,90), 5),
-                                "help_county_overlap_threshold", help_county_overlap_threshold),
-                   labeledInput("county_controls", "Control Variables:",
-                                checkboxGroupInput("county_controls", NULL, c("Water Access 1820"="water_1820", "Railroads 1840"="railroads_1840", "Railroads 1850"="railroads_1850", "Railroads 1861"="railroads_1861")),
-                                "help_county_controls", help_controls),
+                                "help_county_overlap_threshold", help_county_overlap_threshold)),
                    labeledInput("county_schooling_adj", "Modern Adjustment for Human Capital",
                                 selectInput("county_schooling_adj", NULL, c("None"=0, "Same Return"=1, "Specific Return"=2, "Run Both"=3), 0),
                                 "help_county_schooling_adj", help_schooling_adj),
@@ -759,14 +825,32 @@ ui <- fluidPage(title = "Agglomeration Effects USA",
                                                  "help_county_spatial_cutoff", help_spatial_cutoff))
                  ),
                  hr(),
-                 h4("Geographic Controls"),
-                 checkboxGroupInput("geo_controls", "Terrain, Soil and Climate:",
-                   c("Ruggedness and Elevation" = "terrain", "Wheat and Maize Suitability" = "crop", "Temperature and Precipitation" = "climate"), selected = character()),
-                 checkboxGroupInput("water_controls", "Water Access:",
-                   c("Ocean and Great Lakes Access" = "shoreline", "Historical River and Canal Access" = "historical_access", "Distance to Shores and Waterways" = "distance", "Approximate Portage Access" = "portage"), selected = character()),
-                 conditionalPanel("(input.water_controls || []).indexOf('historical_access') >= 0 || (input.water_controls || []).indexOf('distance') >= 0",
-                   selectInput("water_year", "Waterway Reference Year:", seq(1790, 1860, 10), 1820)),
-                 p(class = "geo-control-note", "Terrain and crop controls use area averages. Climate covers 1991–2020. Access means within 10 km; shores use modern boundaries, while rivers and canals use historical dates. Portage access is approximate. Geographic coverage is mainly the contiguous U.S.")
+                 div(id = "geographic_controls_panel",
+                   h4("Geographic Controls"),
+                   p(class = "geo-control-note", "Control for physical geography and historical transport. Each box adds one or more separate variables to the regression. Use (?) for definitions and units."),
+                   conditionalPanel("input.analysis_level == 'MSA'",
+                     labeledInput("msa_controls", "Historical Transport:",
+                       checkboxGroupInput("msa_controls", NULL, c("Combined Water Access 1820"="water_1820", "Railroads 1840"="railroads_1840", "Railroads 1850"="railroads_1850", "Railroads 1861"="railroads_1861"), c("water_1820", "railroads_1840")),
+                       "help_msa_controls", help_controls)),
+                   conditionalPanel("input.analysis_level == 'County'",
+                     labeledInput("county_controls", "Historical Transport:",
+                       checkboxGroupInput("county_controls", NULL, c("Combined Water Access 1820"="water_1820", "Railroads 1840"="railroads_1840", "Railroads 1850"="railroads_1850", "Railroads 1861"="railroads_1861")),
+                       "help_county_controls", help_controls)),
+                   labeledInput("geo_controls", "Terrain, Crop Suitability and Climate:",
+                     checkboxGroupInput("geo_controls", NULL,
+                       c("Ruggedness and Elevation" = "terrain", "Wheat and Maize Suitability" = "crop", "Temperature and Precipitation" = "climate"), selected = character()),
+                     "help_geo_controls", help_geo_controls),
+                   labeledInput("water_controls", "Separate Water Measures:",
+                     checkboxGroupInput("water_controls", NULL,
+                       c("Ocean and Great Lakes Access" = "shoreline", "Historical River and Canal Access" = "historical_access", "Distance to Shores and Waterways" = "distance", "Approximate Portage Access" = "portage"), selected = character()),
+                     "help_water_controls", help_water_controls),
+                   conditionalPanel("(input.water_controls || []).indexOf('historical_access') >= 0 || (input.water_controls || []).indexOf('distance') >= 0",
+                     labeledInput("water_year", "Waterway Reference Year:",
+                       selectInput("water_year", NULL, seq(1790, 1860, 10), 1820),
+                       "help_water_year", geographic_notes[["Waterway reference year"]])),
+                   p(class = "geo-control-note", "Terrain, crop, climate and the separate water measures cover the contiguous U.S. Missing selected values can reduce the regression sample."),
+                   tags$details(class = "geo-control-note", tags$summary("Coverage and sample size"), p(geographic_notes[["Coverage and sample size"]]))
+                 )
     ), # sidebarPanel
     
     # Results
@@ -785,7 +869,7 @@ ui <- fluidPage(title = "Agglomeration Effects USA",
       conditionalPanel("input.show_coefficient_chart == true && input.run_analysis > 0",
         div(class = "optional-chart",
           h4("Coefficient Estimates"),
-          p(class = "estimate-caption", "Points show the estimated density effect; lines show 95% confidence intervals."),
+          p(class = "estimate-caption", "Points show the selected coefficient; lines show 95% confidence intervals."),
           withSpinner(plotOutput("effect_plot", height = "360px"), type = 6, color = "#007BFF")
         )
       ),
@@ -807,13 +891,27 @@ server <- function(input, output, session) {
   map_output <- reactiveVal(NULL)
 
   output$msa_iv_year_label <- renderText({
-    if (identical(input$msa_instrument_type, "county_population"))
+    if (identical(input$msa_instrument_type, "county_population") || identical(input$approach, "employment"))
       "Year of the Historical Population (Historical Census Year):"
     else "Year of the Historical Population Density (Historical Census Year):"
   })
 
-  observeEvent(list(input$msa_density_measure, input$analysis_level, input$msa_instrument_type), {
-    ch <- identical(input$analysis_level, "MSA") && identical(input$msa_density_measure, "CH")
+  output$county_iv_year_label <- renderText({
+    if (identical(input$county_instrument_type, "county_population") || identical(input$approach, "employment"))
+      "Year of the Historical Population (Historical Census Year):"
+    else "Year of the Historical Population Density (Historical Census Year):"
+  })
+
+  observeEvent(input$approach, {
+    choices <- c("Max Density Overlap" = "max_density_overlap", "Weighted Density Overlap" = "weighted_density_overlap", "Glaeser and Gottlieb (2009)" = "county_population")
+    if (identical(input$approach, "employment")) choices <- choices[choices != "weighted_density_overlap"]
+    selected <- isolate(input$county_instrument_type)
+    if (is.null(selected) || !selected %in% choices) selected <- "max_density_overlap"
+    updateSelectInput(session, "county_instrument_type", choices = choices, selected = selected)
+  }, ignoreInit = TRUE)
+
+  observeEvent(list(input$msa_density_measure, input$analysis_level, input$msa_instrument_type, input$county_instrument_type, input$approach), {
+    ch <- !identical(input$approach, "employment") && identical(input$analysis_level, "MSA") && identical(input$msa_density_measure, "CH")
     methods <- if (ch) c("IV", "OLS") else c("IV", "OLS", "First-stage Regression")
     selected <- isolate(input$analysis_type)
     if (is.null(selected) || !selected %in% methods) selected <- "IV"
@@ -821,10 +919,17 @@ server <- function(input, output, session) {
     standard_errors <- c("Cluster on Instrument" = "cluster_instrument",
       "Cluster on State" = "cluster_state", "Spatial (Conley)" = "spatial", "Robust" = "robust")
     if (identical(input$msa_instrument_type, "county_population")) names(standard_errors)[1] <- "Cluster on MSA"
+    else if (identical(input$approach, "employment")) names(standard_errors)[1] <- "Cluster on Historical County"
     if (ch) standard_errors <- standard_errors[standard_errors != "spatial"]
     selected_se <- isolate(input$msa_se_spec)
     if (is.null(selected_se) || !selected_se %in% standard_errors) selected_se <- "cluster_instrument"
     updateSelectInput(session, "msa_se_spec", choices = standard_errors, selected = selected_se)
+    county_errors <- c("Cluster on Instrument" = "cluster_instrument", "Cluster on State" = "cluster_state", "Spatial (Conley)" = "spatial", "Robust" = "robust")
+    if (identical(input$county_instrument_type, "county_population")) names(county_errors)[1] <- "Cluster on County"
+    else if (identical(input$approach, "employment")) names(county_errors)[1] <- "Cluster on Historical County"
+    county_se <- isolate(input$county_se_spec)
+    if (is.null(county_se) || !county_se %in% county_errors) county_se <- "cluster_instrument"
+    updateSelectInput(session, "county_se_spec", choices = county_errors, selected = county_se)
   }, ignoreInit = TRUE)
 
   estimated_sample <- function(model, details = analysis_output()) {
@@ -860,7 +965,8 @@ server <- function(input, output, session) {
           analysis_level <- input$analysis_level
           year_modern <- as.numeric(input$year_modern)
           analysis_type <- input$analysis_type
-          density_measure <- if (analysis_level == "MSA" && identical(input$msa_density_measure, "CH")) "CH" else "average"
+          approach <- if (identical(input$approach, "employment")) "employment" else "density"
+          density_measure <- if (approach == "employment") "employment" else if (analysis_level == "MSA" && identical(input$msa_density_measure, "CH")) "CH" else "average"
           if (density_measure == "CH" && !analysis_type %in% c("IV", "OLS")) stop("Choose IV or OLS for the Ciccone–Hall model.")
           use_fe <- input$use_fe
           fe_type <- input$fe_type
@@ -870,6 +976,7 @@ server <- function(input, output, session) {
         incProgress(0.1, detail = "Configuring analysis...")
         
         suffix <- if (sample_scope == "states_only") "_s" else ""
+        instrument_id_col <- NULL
         
         if (analysis_level == "MSA") {
           isolate({
@@ -894,12 +1001,18 @@ server <- function(input, output, session) {
                    avg_schooling = msa_schooling_09, college_share = college_share_09)
           
           if (instrument_type == "county_population") {
-            sample_col <- glue("GGlnpop_{sample_year}{suffix}")
-            instr_col <- glue("GGlnpop_{iv_year}{suffix}")
+            sample_col <- glue("GGpop_{sample_year}{suffix}")
+            instr_col <- glue("GGpop_{iv_year}{suffix}")
             overlap_pct <- NULL
           } else if (instrument_type == "overlap") {
-            sample_col <- glue("MSAol_{sample_year}_{overlap_pct}{suffix}")
-            instr_col <- glue("MSAol_{iv_year}_{overlap_pct}{suffix}")
+            if (approach == "employment") {
+              sample_col <- glue("MSApop_{sample_year}_{overlap_pct}{suffix}")
+              instr_col <- glue("MSApop_{iv_year}_{overlap_pct}{suffix}")
+              instrument_id_col <- glue("MSApopid_{iv_year}_{overlap_pct}{suffix}")
+            } else {
+              sample_col <- glue("MSAol_{sample_year}_{overlap_pct}{suffix}")
+              instr_col <- glue("MSAol_{iv_year}_{overlap_pct}{suffix}")
+            }
           } else stop("Choose a supported MSA instrument construction.")
           
           # Apply territory filtering for states-only analysis
@@ -955,15 +1068,14 @@ server <- function(input, output, session) {
             }
           }
           
-          # MODIFIED: Use total employment (employment) for RHS across all sectors
+          df <- df %>% mutate(RHS = if (approach == "employment") log(employment) else log(employment / (msaarea / 4046.8)))
           df <- switch(
             as.character(sectors),
-            "1" = df %>% mutate(RHS = log(employment / (msaarea / 4046.8)), LHS = ln_output_worker),
-            "2" = df %>% mutate(RHS = log(employment / (msaarea / 4046.8)), LHS = ln_output_worker_private),
-            "3" = df %>% mutate(RHS = log(employment / (msaarea / 4046.8)), LHS = log(gmp_indstryid_12 / emply_indryid_500)),
-            "4" = df %>% mutate(RHS = log(employment / (msaarea / 4046.8)), LHS = log((gmp_private_industry - gmp_agriculture) / employment_private_nonfarm)),
-            "5" = df %>% mutate(RHS = log(employment / (msaarea / 4046.8)),
-                                LHS = log((gmp_private_industry - gmp_agriculture - gmp_mining) / (employment_private_nonfarm - employment_mining))),
+            "1" = df %>% mutate(LHS = ln_output_worker),
+            "2" = df %>% mutate(LHS = ln_output_worker_private),
+            "3" = df %>% mutate(LHS = log(gmp_indstryid_12 / emply_indryid_500)),
+            "4" = df %>% mutate(LHS = log((gmp_private_industry - gmp_agriculture) / employment_private_nonfarm)),
+            "5" = df %>% mutate(LHS = log((gmp_private_industry - gmp_agriculture - gmp_mining) / (employment_private_nonfarm - employment_mining))),
             stop("Invalid MSA sector specified.")
           )
           
@@ -1007,7 +1119,7 @@ server <- function(input, output, session) {
           }
           
           # Apply territory filtering for states-only analysis
-          if (sample_scope == "states_only") {
+          if (sample_scope == "states_only" && instrument_type != "county_population") {
             fe_var_name_full <- glue("hist_state_fe_{iv_year}")  # without _s suffix
             
             # Try to find county identifier column
@@ -1059,25 +1171,36 @@ server <- function(input, output, session) {
             }
           }
           
-          if (instrument_type == "weighted_density_overlap") {
+          if (instrument_type == "county_population") {
+            sample_col <- glue("GGpop_{sample_year}{suffix}")
+            instr_col <- glue("GGpop_{iv_year}{suffix}")
+            overlap_threshold <- NULL
+          } else if (instrument_type == "weighted_density_overlap") {
+            if (approach == "employment") stop("Choose Max Density Overlap or Glaeser and Gottlieb (2009) for 2b) Employment.")
             sample_col <- glue("iv_overlap_{overlap_threshold}_{sample_year}{suffix}")
             instr_col  <- glue("iv_overlap_{overlap_threshold}_{iv_year}{suffix}")
           } else if (instrument_type == "max_density_overlap") {
-            sample_col <- glue("iv_overlap_max_{overlap_threshold}_{sample_year}{suffix}")
-            instr_col  <- glue("iv_overlap_max_{overlap_threshold}_{iv_year}{suffix}")
+            if (approach == "employment") {
+              sample_col <- glue("ivpop_overlap_max_{overlap_threshold}_{sample_year}{suffix}")
+              instr_col <- glue("ivpop_overlap_max_{overlap_threshold}_{iv_year}{suffix}")
+              instrument_id_col <- glue("ivpopid_overlap_max_{overlap_threshold}_{iv_year}{suffix}")
+            } else {
+              sample_col <- glue("iv_overlap_max_{overlap_threshold}_{sample_year}{suffix}")
+              instr_col <- glue("iv_overlap_max_{overlap_threshold}_{iv_year}{suffix}")
+            }
           } else {
             stop("Error: Invalid instrument_type for County level specified.")
           }
           
-          # MODIFIED: Use total employment (employment_total) for RHS across all sectors
+          df <- df %>% mutate(RHS = if (approach == "employment") log(employment_total) else log(employment_total / area_acre))
           df <- switch(
             as.character(sectors),
-            "1" = df %>% mutate(RHS = log(employment_total / area_acre), LHS = log(gcp_total / employment_total)),
-            "2" = df %>% mutate(RHS = log(employment_total / area_acre), LHS = log(gcp_private_industry / (employment_private_nonfarm + emply_c_indryid_70))),
+            "1" = df %>% mutate(LHS = log(gcp_total / employment_total)),
+            "2" = df %>% mutate(LHS = log(gcp_private_industry / (employment_private_nonfarm + emply_c_indryid_70))),
             "3" = df %>% rename(gcp_manufact = gcp_indstryid_12) %>%
-              mutate(RHS = log(employment_total / area_acre), LHS = log(gcp_manufact / emply_c_indryid_500)),
-            "4" = df %>% mutate(RHS = log(employment_total / area_acre), LHS = log((gcp_private_industry - gcp_agriculture) / employment_private_nonfarm)),
-            "5" = df %>% mutate(RHS = log(employment_total / area_acre), LHS = log((gcp_private_industry - gcp_agriculture - gcp_mining) / (employment_private_nonfarm - employment_mining))),
+              mutate(LHS = log(gcp_manufact / emply_c_indryid_500)),
+            "4" = df %>% mutate(LHS = log((gcp_private_industry - gcp_agriculture) / employment_private_nonfarm)),
+            "5" = df %>% mutate(LHS = log((gcp_private_industry - gcp_agriculture - gcp_mining) / (employment_private_nonfarm - employment_mining))),
             stop("Invalid County sector specified.")
           )
           
@@ -1093,7 +1216,7 @@ server <- function(input, output, session) {
         
         new_controls <- resolve_geo_controls(input$geo_controls, input$water_controls, input$water_year)
         controls_vec <- unique(c(controls_vec, new_controls))
-        req_cols <- c(sample_col, instr_col, controls_vec)
+        req_cols <- c(sample_col, instr_col, instrument_id_col, controls_vec)
         missing_cols <- req_cols[!req_cols %in% names(df)]
         if (length(missing_cols) > 0) {
           stop(glue("Error: Required column(s) not found: {paste(missing_cols, collapse=', ')}. Check selections or data file."))
@@ -1103,13 +1226,20 @@ server <- function(input, output, session) {
         df <- df %>% mutate(across(all_of(c(sample_col, instr_col)), as.numeric))
         df <- df %>%
           mutate(.sample_iv = .data[[sample_col]], instrument = .data[[instr_col]])
-        if (analysis_level == "MSA" && instrument_type == "county_population") {
-          df <- df %>% filter(is.finite(.sample_iv) & is.finite(instrument))
+        if (instrument_type == "county_population" || approach == "employment") {
+          df <- df %>%
+            filter(is.finite(.sample_iv) & .sample_iv >= 0 & is.finite(instrument) & instrument >= 0) %>%
+            mutate(instrument = instrument / 1000)
         } else df <- df %>% filter(!is.na(.sample_iv) & !is.na(instrument))
         df <- df %>% select(-.sample_iv)
-        if (analysis_level == "MSA" && instrument_type == "county_population") {
-          if (!"msafips" %in% names(df)) stop("MSA identifiers are required for the county-matched log population instrument.")
-          df$clusterID <- as.integer(as.factor(df$msafips))
+        if (instrument_type == "county_population") {
+          unit_id <- if (analysis_level == "MSA") "msafips" else "geofips"
+          if (!unit_id %in% names(df)) stop("Modern geographic identifiers are required for the county-matched population instrument.")
+          df$clusterID <- as.integer(as.factor(df[[unit_id]]))
+        } else if (approach == "employment") {
+          if (any(is.na(df[[instrument_id_col]]) | trimws(df[[instrument_id_col]]) == ""))
+            stop("Historical county identifiers are missing for the selected population instrument. Rebuild the population inputs.")
+          df$clusterID <- as.integer(as.factor(df[[instrument_id_col]]))
         } else df$clusterID <- as.integer(as.factor(df$instrument))
         if (apply_college_adj) {
           if (!"college_share" %in% names(df)) stop("Error: 'college_share' column not found.")
@@ -1238,6 +1368,7 @@ server <- function(input, output, session) {
           models = models,
           first_stage_models = first_stage_models,
           analysis_type = analysis_type,
+          approach = approach,
           density_measure = density_measure,
           ch_missing_n = ch_missing_n,
           analysis_level = analysis_level,
@@ -1293,8 +1424,10 @@ server <- function(input, output, session) {
       map_path <- NULL
       map_title <- "Instrument Map: Historical density instrument map not available for the selected settings."
       
-      if (level == "MSA" && identical(input$msa_instrument_type, "county_population")) {
-        map_title <- "Instrument Map: Log historical MSA population"
+      selected_type <- if (level == "MSA") input$msa_instrument_type else input$county_instrument_type
+      population_map <- uses_population_instrument(list(instrument_type = selected_type, approach = input$approach))
+      if (population_map) {
+        map_title <- "Instrument Map: Historical population (thousands of people)"
       } else if (level == "MSA") {
         year <- input$msa_iv_year
         pct <- input$msa_overlap_pct
@@ -1321,8 +1454,8 @@ server <- function(input, output, session) {
       }
       
       map_output(list(src = map_path, title = map_title,
-        message = if (level == "MSA" && identical(input$msa_instrument_type, "county_population"))
-          "A map is not available for the county-matched log population instrument." else NULL))
+        message = if (population_map)
+          "A map is not available for the population instrument (thousands of people)." else NULL))
     })
   })
   
@@ -1345,10 +1478,12 @@ server <- function(input, output, session) {
   create_professional_table <- function(models, analysis_type, se_spec = NULL, cluster_data = NULL,
                                         first_stage_models = NULL, data_for_fs = NULL,
                                         controls_vec = NULL, fe_part = NULL, vcov_arg = NULL,
-                                        model_clusters = NULL, instrument_type = NULL) {
+                                        model_clusters = NULL, instrument_type = NULL,
+                                        approach = "density", analysis_level = "MSA", overlap_pct = NULL) {
     if (!length(models)) return("")
     escape <- function(x) as.character(htmltools::htmlEscape(x))
     model_names <- names(models)
+    population_instrument <- uses_population_instrument(list(instrument_type = instrument_type, approach = approach))
     all_vars <- unique(unlist(lapply(models, function(model) names(coef(model)))))
     is_ch <- inherits(models[[1]], "ch_model")
     main_var <- if (is_ch) "ch_elasticity" else switch(analysis_type, IV = "fit_RHS", OLS = "RHS", "instrument")
@@ -1365,7 +1500,7 @@ server <- function(input, output, session) {
                       paste0('<th>', escape(model_names), '</th>', collapse = ""), '</tr></thead><tbody>'))
     for (variable in ordered_vars) {
       format_value <- function(value) {
-        if (identical(instrument_type, "county_population") && variable == "instrument" &&
+        if (population_instrument && variable == "instrument" &&
             is.finite(value) && value != 0 && abs(value) < 0.00005) return(sprintf("%.3e", value))
         format_estimate(value)
       }
@@ -1377,7 +1512,7 @@ server <- function(input, output, session) {
         if (!variable %in% names(coef(model))) return("")
         paste0("(", format_value(app_model_se(model)[variable]), ")")
       }, character(1))
-      parts <- c(parts, row(control_label(variable, instrument_type), estimates, "coefficient"), row("", uncertainties, "se"))
+      parts <- c(parts, row(control_label(variable, instrument_type, approach), estimates, "coefficient"), row("", uncertainties, "se"))
     }
     parts <- c(parts, row("Observations", vapply(models, function(model) format(nobs(model), big.mark = ","), character(1)), row_class = "top-border"))
     diagnostic_models <- if (analysis_type == "IV") first_stage_models else if (analysis_type == "First-stage Regression") models else NULL
@@ -1390,14 +1525,21 @@ server <- function(input, output, session) {
     }
     if (!is.null(model_clusters) && any(!is.na(model_clusters))) {
       label <- if (se_spec == "cluster_instrument") {
-        if (identical(instrument_type, "county_population")) "MSA clusters" else "Instrument clusters"
+        instrument_cluster_label(list(instrument_type = instrument_type, analysis_level = analysis_level, approach = approach))
       } else "State clusters"
       parts <- c(parts, row(label, ifelse(is.na(model_clusters), "—", model_clusters)))
     }
     parts <- c(parts, '</tbody></table></div>')
-    note <- 'Standard errors in parentheses. *** p&lt;0.01, ** p&lt;0.05, * p&lt;0.1.'
+    note <- paste0('Approach: ', approach_name(approach), '. Standard errors in parentheses. *** p&lt;0.01, ** p&lt;0.05, * p&lt;0.1.')
+    if (identical(approach, "employment"))
+      note <- paste0(note, ' The employment measure is the natural log of total employment, without dividing by area.')
     if (identical(instrument_type, "county_population"))
-      note <- paste0(note, ' The instrument is the natural log of total historical population in the matched MSA counties.')
+      note <- paste0(note, ' The instrument sums full historical county populations matched to the modern ',
+        if (analysis_level == "MSA") 'MSA county membership' else 'county unit',
+        ', divided by 1,000 (thousands of people), without area weights.')
+    else if (identical(approach, "employment"))
+      note <- paste0(note, ' The instrument is the full population of the highest-density historical county meeting the ',
+        escape(overlap_pct), '% overlap threshold, divided by 1,000 (thousands of people), without area weights.')
     if (length(diagnostic_models)) {
       note <- paste0(note, ' Instrument Wald F is the squared t statistic for the excluded instrument, using the selected standard errors and the model sample.')
     }
@@ -1416,7 +1558,7 @@ server <- function(input, output, session) {
       "Analysis Error"
     } else {
       details <- analysis_output()
-      paste(details$analysis_level, "results ·", model_description(details))
+      paste(details$analysis_level, "results ·", approach_name(details$approach), "·", model_description(details))
     }
   })
   
@@ -1439,7 +1581,8 @@ server <- function(input, output, session) {
         fe_part = details$fe_part,
         vcov_arg = details$vcov_arg,
         model_clusters = details$model_clusters,
-        instrument_type = details$instrument_type
+        instrument_type = details$instrument_type,
+        approach = details$approach, analysis_level = details$analysis_level, overlap_pct = details$overlap_pct
       ))
     }
   })
@@ -1469,7 +1612,7 @@ server <- function(input, output, session) {
     # Build comprehensive analysis details
     se_description <- details$se_spec
     if (details$se_spec == "cluster_instrument" && !is.null(details$cluster_data$clusterID)) {
-      se_description <- if (is_county_population(details)) "Cluster on MSA" else "Cluster on historical instrument"
+      se_description <- if (is_county_population(details)) paste("Cluster on", details$analysis_level) else if (identical(details$approach, "employment")) "Cluster on historical county" else "Cluster on historical instrument"
     } else if (details$se_spec == "cluster_state" && !is.null(details$cluster_data$state_id)) {
       se_description <- "Cluster on modern state"
     } else if (details$se_spec == "spatial") {
@@ -1487,17 +1630,19 @@ server <- function(input, output, session) {
       '<strong>Analysis Level:</strong> ', details$analysis_level, '<br>',
       '<strong>Modern Year:</strong> ', details$year_modern, '<br>',
       '<strong>Analysis Method:</strong> ', model_description(details), '<br>',
+      '<strong>Approach:</strong> ', approach_name(details$approach), '<br>',
+      '<strong>Employment measure:</strong> ', if (details$density_measure == 'CH') 'Ciccone–Hall index' else control_label('RHS', details$instrument_type, details$approach), '<br>',
       '<strong>Sector:</strong> ', get_sector_name(details$sectors), '<br>'
     )
     
     # Sample and Instrument Settings  
     detail_sections$sample <- paste0(
       '<strong> Year of the Historical Territory:</strong> ', details$sample_year, '<br>',
-      '<strong>', if (is_county_population(details)) 'Year of the Historical Population (Historical Census Year):' else 'Year of the Historical Population Density (Historical Census Year):', '</strong> ', details$iv_year, '<br>',
-      '<strong>Match of Historical to Modern Geographic Units:</strong> ', instrument_name(details$instrument_type),
+      '<strong>', if (uses_population_instrument(details)) 'Year of the Historical Population (Historical Census Year):' else 'Year of the Historical Population Density (Historical Census Year):', '</strong> ', details$iv_year, '<br>',
+      '<strong>Match of Historical to Modern Geographic Units:</strong> ', instrument_name(details$instrument_type, details$approach),
       if (!is.null(details$overlap_pct)) paste0(' (', details$overlap_pct, '% overlap)') else '', '<br>',
       '<strong>Historical territory:</strong> ', details$sample_scope, '<br>',
-      if (is_county_population(details)) '<strong>Instrument units:</strong> Natural log of people<br>' else ''
+      if (uses_population_instrument(details)) '<strong>Instrument units:</strong> Thousands of people<br>' else ''
     )
     
     # Fixed Effects and Controls
@@ -1602,12 +1747,12 @@ server <- function(input, output, session) {
     sample_text <- if (length(unique(n)) == 1) format(n[1], big.mark = ",") else paste(format(range(n), big.mark = ","), collapse = "–")
     metric <- function(label, value, note) div(class = "metric-card", div(class = "metric-label", label), div(class = "metric-value", value), div(class = "metric-detail", note))
     tagList(div(class = "metric-grid",
-      metric(if (details$analysis_type == "First-stage Regression" && is_county_population(details)) "Log population coefficient" else if (identical(details$density_measure, "CH")) "Ciccone–Hall elasticity" else "Density coefficient", if (nrow(primary)) {
-               if (details$analysis_type == "First-stage Regression" && is_county_population(details)) format(primary$estimate[1], digits = 4) else sprintf("%.3f", primary$estimate[1])
+      metric(if (details$analysis_type == "First-stage Regression" && uses_population_instrument(details)) "Historical population coefficient (per 1,000 people)" else if (identical(details$density_measure, "CH")) "Ciccone–Hall elasticity" else if (identical(details$approach, "employment")) "Log employment coefficient" else "Density coefficient", if (nrow(primary)) {
+               if (details$analysis_type == "First-stage Regression" && uses_population_instrument(details)) format(primary$estimate[1], digits = 4) else sprintf("%.3f", primary$estimate[1])
              } else "Unavailable",
              if (nrow(primary)) primary$model[1] else "Not identified in this sample"),
       metric("95% interval", if (nrow(primary)) {
-        if (details$analysis_type == "First-stage Regression" && is_county_population(details)) paste(format(primary$conf_low[1], digits = 4), "to", format(primary$conf_high[1], digits = 4)) else sprintf("%.3f to %.3f", primary$conf_low[1], primary$conf_high[1])
+        if (details$analysis_type == "First-stage Regression" && uses_population_instrument(details)) paste(format(primary$conf_low[1], digits = 4), "to", format(primary$conf_high[1], digits = 4)) else sprintf("%.3f to %.3f", primary$conf_low[1], primary$conf_high[1])
       } else "—", "Using the chosen standard errors"),
       metric("Observations", sample_text, paste(length(details$models), if (length(details$models) == 1) "model" else "models")),
       metric("Modern year", as.character(details$year_modern), paste(details$analysis_level, "·", model_description(details)))),
@@ -1640,13 +1785,10 @@ server <- function(input, output, session) {
   output$data_notes <- renderUI({
     div(class = "data-notes",
       h4("Geographic measures"),
-      tags$dl(
-        tags$dt("Terrain"), tags$dd("Area-weighted Nunn–Puga ruggedness and PRISM elevation, in metres."),
-        tags$dt("Crop suitability"), tags$dd("GAEZ wheat and maize indices, 0–10,000: rainfed production with low inputs, 1981–2010. Regression coefficients refer to a 1,000-point increase in each index."),
-        tags$dt("Climate"), tags$dd("PRISM 1991–2020 normals: January and July temperature in °C, annual precipitation in mm."),
-        tags$dt("Water"), tags$dd("Access means the geographic footprint lies within 10 km. River and canal dates follow Atack; shoreline uses modern Census geometry. Distances run from the geometric centroid and enter as log(1 + km)."),
-        tags$dt("Coverage"), tags$dd("These new controls cover the contiguous US. Missing coverage and uncertain historical dates remain missing. Approximate portage candidates are optional; historical harbor depth is not included.")),
-      p("Measures are calculated over county or MSA boundaries. The original water and railroad variables remain available under Historical infrastructure."))
+      p("Each checkbox adds its component variables separately. For example, the climate box adds three controls; it does not create a single climate index."),
+      tags$dl(lapply(names(geographic_notes), function(measure)
+        tagList(tags$dt(measure), tags$dd(geographic_notes[[measure]])))),
+      p("Historical river and canal dates come from the Atack transport data. All geographic controls, including the original water and railroad indicators, are grouped in the configuration's Geographic Controls section."))
   })
 
   output$download_coefficients <- downloadHandler(
@@ -1656,12 +1798,12 @@ server <- function(input, output, session) {
       table <- model_coefficients(details)
       table$controls <- paste(details$controls_vec, collapse = "; ")
       table$water_year <- details$water_year
-      table$standard_errors <- if (is_county_population(details) && details$se_spec == "cluster_instrument") "Cluster on MSA" else details$se_spec
+      table$standard_errors <- if (details$se_spec == "cluster_instrument") instrument_cluster_label(details) else details$se_spec
       table$fixed_effects <- details$fe_type
       table$sample_year <- details$sample_year
       table$instrument_year <- details$iv_year
-      table$instrument_construction <- instrument_name(details$instrument_type)
-      if (is_county_population(details)) table$instrument_units <- "Natural log of people"
+      table$instrument_construction <- instrument_name(details$instrument_type, details$approach)
+      if (uses_population_instrument(details)) table$instrument_units <- "Thousands of people"
       if (!is.null(details$overlap_pct)) table$overlap_threshold_pct <- details$overlap_pct
       utils::write.csv(table, file, row.names = FALSE, na = "")
     })
@@ -1680,15 +1822,17 @@ server <- function(input, output, session) {
       chart_data <- base64enc::dataURI(file = chart_file, mime = "image/png")
       table <- create_professional_table(details$models, details$analysis_type, details$se_spec,
         details$cluster_data, details$first_stage_models, details$data_for_fs, details$controls_vec, details$fe_part, details$vcov_arg,
-        model_clusters = details$model_clusters, instrument_type = details$instrument_type)
+        model_clusters = details$model_clusters, instrument_type = details$instrument_type,
+        approach = details$approach, analysis_level = details$analysis_level, overlap_pct = details$overlap_pct)
       esc <- htmltools::htmlEscape
-      specifications <- c(Geography = details$analysis_level, Method = model_description(details), `Modern year` = details$year_modern,
+      specifications <- c(Geography = details$analysis_level, Approach = approach_name(details$approach), Method = model_description(details), `Modern year` = details$year_modern,
+        `Employment measure` = if (details$density_measure == 'CH') 'Ciccone–Hall index' else control_label('RHS', details$instrument_type, details$approach),
         Sector = c("All", "Private", "Manufacturing", "Private non-farm", "Private non-farm/mining")[details$sectors],
         `Historical sample year` = details$sample_year, `Instrument year` = details$iv_year,
-        `Historical territory` = details$sample_scope, `Instrument construction` = instrument_name(details$instrument_type),
-        `Instrument units` = if (is_county_population(details)) "Natural log of people" else NULL,
+        `Historical territory` = details$sample_scope, `Instrument construction` = instrument_name(details$instrument_type, details$approach),
+        `Instrument units` = if (uses_population_instrument(details)) "Thousands of people" else NULL,
         `Overlap threshold (%)` = details$overlap_pct, `State fixed effects` = details$fe_type,
-        `Standard errors` = if (is_county_population(details) && details$se_spec == "cluster_instrument") "Cluster on MSA" else details$se_spec, `Schooling adjustment` = details$schooling_adj,
+        `Standard errors` = if (details$se_spec == "cluster_instrument") instrument_cluster_label(details) else details$se_spec, `Schooling adjustment` = details$schooling_adj,
         `College adjustment` = if (details$apply_college_adj) details$college_coeff else "None",
         `Mining threshold` = if (details$mining_filter_active) details$mining_threshold else "None",
         `Spatial cutoff (km)` = if (details$se_spec == "spatial") details$spatial_cutoff else "Not used",
@@ -1696,11 +1840,13 @@ server <- function(input, output, session) {
         `Water-access year` = details$water_year,
         Controls = if (length(details$controls_vec)) paste(vapply(details$controls_vec, control_label, character(1)), collapse = "; ") else "None")
       spec_html <- paste0("<dt>", esc(names(specifications)), "</dt><dd>", esc(as.character(specifications)), "</dd>", collapse = "")
+      geo_html <- paste0('<h2>Geographic controls</h2><dl>',
+        paste0('<dt>', esc(names(geographic_notes)), '</dt><dd>', esc(unname(geographic_notes)), '</dd>', collapse = ''), '</dl>')
       html <- paste0('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agglomeration results</title>',
         '<style>body{font-family:Arial,sans-serif;color:#000000;max-width:1100px;margin:40px auto;padding:0 24px;line-height:1.5}h1{font-size:32px}img{max-width:100%}table{border-collapse:collapse;width:100%;font-size:14px}th,td{padding:7px 10px;text-align:right;border-bottom:1px solid #dddddd}.row-label{text-align:left}th{border-top:2px solid #000000}dt{font-weight:bold;margin-top:10px}dd{margin-left:0}.table-notes{font-size:12px;margin-top:15px}@media print{body{margin:0}}</style><body>',
         '<h1>Agglomeration effects in the United States</h1><p>', esc(paste(details$analysis_level, details$year_modern, model_description(details), sep = ' · ')),
-        '</p><img alt="Density coefficient estimates and 95% confidence intervals" src="', chart_data, '">', table,
-        '<h2>Specification</h2><dl>', spec_html, '</dl><p>New geographic controls cover the contiguous US. Missing values are excluded. Shoreline is a modern proxy; portage access is approximate.</p></body></html>')
+        '</p><img alt="Coefficient estimates and 95% confidence intervals" src="', chart_data, '">', table,
+        '<h2>Specification</h2><dl>', spec_html, '</dl>', geo_html, '</body></html>')
       writeLines(html, file, useBytes = TRUE)
     })
 

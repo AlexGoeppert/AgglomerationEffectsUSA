@@ -440,7 +440,10 @@ app_model_rows <- function(model) {
   fixest::obs(model)
 }
 app_model_se <- function(model) sqrt(diag(stats::vcov(model)))
-app_model_pvalue <- function(model) app_model_table(model)[, 4]
+app_model_pvalue <- function(model) {
+  table <- app_model_table(model)
+  stats::setNames(as.numeric(table[, 4]), rownames(table))
+}
 model_description <- function(details) {
   if (identical(details$density_measure, "CH")) {
     return(if (details$analysis_type == "IV") "Ciccone–Hall · nonlinear IV (GMM)" else "Ciccone–Hall · nonlinear least squares")

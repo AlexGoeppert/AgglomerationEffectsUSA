@@ -27,7 +27,7 @@ read_app_data <- function(path, level) {
   if (length(missing)) stop(paste("Required data fields are missing:", paste(missing, collapse = ", ")))
   patterns <- c("^hist_state_fe_[0-9]{4}(_s)?$", "^GGpop_[0-9]{4}(_s)?$",
     "^(rugged_mean|elev_mean|gaez_wheat_suit|gaez_maize_suit|tjan|tjul|precip|ocean_access10|lakes_access10|portage_access10)$",
-    "^(river_access_|canal_access_|dist_.*_100km$)")
+    "^(river_access_|canal_access_|dist_.*_100km(_sq)?$)")
   patterns <- c(patterns, if (level == "MSA") c("^MSAol_[0-9]{4}_(5|[1-9]0)(_s)?$",
     "^MSApop(id)?_[0-9]{4}_(5|[1-9]0)(_s)?$", "^(nc|ac)[0-9]+$", "^ch_complete$")
     else c("^iv_overlap_(max_)?(5|[1-9]0)_[0-9]{4}(_s)?$", "^ivpop(id)?_overlap_max_(5|[1-9]0)_[0-9]{4}(_s)?$"))
@@ -140,7 +140,7 @@ geographic_notes <- c(
   "Temperature and precipitation" = "Adds three area-weighted PRISM averages: January temperature and July temperature in degrees Celsius, and annual precipitation in millimetres. These describe long-run climate in 1991-2020, independently of the selected modern or historical census year.",
   "Ocean and Great Lakes access" = "Adds two separate yes/no indicators. Each equals 1 if any part of the county or MSA is within 10 km of the ocean shoreline or Great Lakes shoreline, and 0 otherwise. The shorelines use modern Census geography.",
   "Historical river and canal access" = "Adds two separate yes/no indicators for access within 10 km of a river segment with documented steamboat operation and a canal operating in the selected waterway year. Distance is measured from the nearest part of the county or MSA. This river measure covers documented steamboat routes.",
-  "Distance to shores and waterways" = "Adds four separate distances: ocean, Great Lakes, operating rivers and operating canals. Each runs from the county's or MSA's geometric centre to the nearest feature. The regression uses distance in 100 km units, without a logarithm or added constant. Zero remains zero. Each coefficient refers to 100 km more distance. The centre is based on geography, without population weights.",
+  "Distance to shores and waterways" = "Adds distances to the ocean, Great Lakes, operating rivers and operating canals. Each runs from the county's or MSA's geometric centre to the nearest feature. Each distance is measured in 100 km units and enters the regression together with its square, allowing the relationship to curve as distance increases. The centre is based on geography, without population weights.",
   "Approximate portage access" = "One yes/no indicator for whether any part of the county or MSA is within 10 km of a potential portage location near the boundary between the Coastal Plain and Piedmont. Locations are inferred from river geography and have not been verified as historical portages.",
   "Waterway reference year" = "Changes only the historical river and canal access and distance measures. It is independent of the historical population instrument and sample years. Water Access Sum 1820 and the railroad controls keep their stated years; modern shorelines and approximate portage locations also stay fixed.",
   "Coverage and sample size" = "Terrain, crop, climate and the separate water measures cover the contiguous United States. Area averages use grid cells with available values; areas with no usable coverage remain missing. Unknown operating dates can also leave water measures missing. Observations with missing values in selected controls are excluded from the regression, so adding controls can reduce the sample. Missing values are never treated as zero."
@@ -190,10 +190,11 @@ resolve_geo_controls <- function(geo_groups = character(), water_groups = charac
   water_year <- as.integer(water_year)
   if (length(water_year) != 1L || is.na(water_year) || !water_year %in% seq(1790, 1860, 10))
     stop("Choose a water-access year from 1790 to 1860, in ten-year steps.")
+  distances <- c("dist_ocean_100km", "dist_lakes_100km",
+                 paste0(c("dist_river_", "dist_canal_"), water_year, "_100km"))
   water <- list(shoreline = c("ocean_access10", "lakes_access10"),
                 historical_access = paste0(c("river_access_", "canal_access_"), water_year),
-                distance = c("dist_ocean_100km", "dist_lakes_100km",
-                             paste0(c("dist_river_", "dist_canal_"), water_year, "_100km")),
+                distance = as.vector(rbind(distances, paste0(distances, "_sq"))),
                 portage = "portage_access10")
   if (any(!geo_groups %in% names(land)) || any(!water_groups %in% names(water)))
     stop("An unknown geographic control group was selected.")
@@ -232,6 +233,9 @@ control_label <- function(variable, instrument_type = NULL, approach = "density"
   if (identical(approach, "employment") && variable %in% c("RHS", "fit_RHS"))
     return(if (variable == "fit_RHS") "Log employment (instrumented)" else "Log employment")
   if (variable == "ch_elasticity") return("Ciccone–Hall elasticity (theta − 1)")
+  if (grepl("^dist_.*_100km_sq$", variable))
+    return(sub("distance (100 km)", "distance² [(100 km)²]",
+               control_label(sub("_sq$", "", variable)), fixed = TRUE))
   labels <- c(fit_RHS = "Log employment density (instrumented)", RHS = "Log employment density",
               instrument = "Historical density instrument", `(Intercept)` = "Constant",
               water_1820 = "Water access sum, 1820", railroads_1840 = "Railroads, 1840",

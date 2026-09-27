@@ -27,7 +27,7 @@ read_app_data <- function(path, level) {
   if (length(missing)) stop(paste("Required data fields are missing:", paste(missing, collapse = ", ")))
   patterns <- c("^hist_state_fe_[0-9]{4}(_s)?$", "^GGpop_[0-9]{4}(_s)?$",
     "^(rugged_mean|elev_mean|gaez_wheat_suit|gaez_maize_suit|tjan|tjul|precip|ocean_access10|lakes_access10|portage_access10)$",
-    "^(river_access_|canal_access_|ln1p_dist_)")
+    "^(river_access_|canal_access_|dist_.*_100km$)")
   patterns <- c(patterns, if (level == "MSA") c("^MSAol_[0-9]{4}_(5|[1-9]0)(_s)?$",
     "^MSApop(id)?_[0-9]{4}_(5|[1-9]0)(_s)?$", "^(nc|ac)[0-9]+$", "^ch_complete$")
     else c("^iv_overlap_(max_)?(5|[1-9]0)_[0-9]{4}(_s)?$", "^ivpop(id)?_overlap_max_(5|[1-9]0)_[0-9]{4}(_s)?$"))
@@ -68,7 +68,7 @@ help_analysis_level      <- "Pick the geography to study: metropolitan statistic
 help_year_modern         <- "Year in which modern productivity and employment are measured."
 help_approach <- paste(
   "Employment density uses log total employment per unit of area, or the Ciccone–Hall index for MSAs.",
-  "2b) Employment uses log total employment, without dividing by area. Its instrument is historical population divided by 1,000.",
+  "Employment uses log total employment, without dividing by area. Its instrument is historical population divided by 1,000.",
   "The selected matching method determines which historical county populations are used. Outcomes, controls and schooling adjustments keep their existing definitions.", sep = "\n")
 help_analysis_type       <- paste(
   "Estimation method:",
@@ -103,7 +103,7 @@ help_mining_filter_active<- "Exclude geographic units whose share of mining in G
 help_mining_threshold    <- "Drops all geographic units with a share of mining in GDP above the chosen level."
 help_se_spec             <- paste(
   "Standard‑error option:",
-  " • Cluster by historical instrument – groups observations sharing an instrument. Under 2b overlap, groups share the same selected historical county. County matching clusters by the modern MSA or county.",
+  " • Cluster by historical instrument – groups observations sharing an instrument. Under employment overlap, groups share the same selected historical county. County matching clusters by the modern MSA or county.",
   " • Cluster by state – clusters at the modern state level. ",
   " • Spatial correlation (Conley standard errors) – distance based correction using uniform kernel and a distance cutoff (distance cutoff chosen below).",
   " • Robust – heteroskedasticity robust standard errors.",
@@ -116,7 +116,7 @@ help_spatial_kernel      <- "Uniform kernel with constant weight within cutoff d
 # MSA‑specific settings
 help_msa_instrument_type     <- paste(
   "How to construct the historical instrument:",
-  " Overlap – selects the historical county with the highest population density among counties with at least the chosen percentage of their territory overlapping the modern MSA. Employment density uses that county's density; 2b) Employment uses its full population divided by 1,000, without area weights.",
+  " Overlap – selects the historical county with the highest population density among counties with at least the chosen percentage of their territory overlapping the modern MSA. Employment density uses that county's density; Employment uses its full population divided by 1,000, without area weights.",
   " Glaeser and Gottlieb (2009) – historical county identities are matched to current county identities and then to the project's current MSA county membership. Whole historical county populations are summed for the selected census year and territory scope, without area weights. The instrument is this total divided by 1,000 (thousands of people).",
   " Counties without a reliable match are left unresolved. A missing population for a matched county or a known source gap makes the MSA total unavailable.",
   sep = "\n")
@@ -126,23 +126,23 @@ help_msa_overlap_pct         <- "Minimum % of a historical county's area that mu
 help_county_msa_restriction  <- "Keep only counties that belong to a modern MSA."
 help_county_instrument_type  <- paste(
   "How to construct the historical instrument:",
-  " • Max density overlap – selects the historical county with the highest population density among counties meeting the chosen overlap percentage. Employment density uses that county's density; 2b) Employment uses its full population divided by 1,000, without area weights.",
+  " • Max density overlap – selects the historical county with the highest population density among counties meeting the chosen overlap percentage. Employment density uses that county's density; Employment uses its full population divided by 1,000, without area weights.",
   " • Weighted density overlap – averages historical county densities using area-overlap weights. This option is available for employment density only.",
   " • Glaeser and Gottlieb (2009) – matches historical county identities to the project's current county units and sums their full populations for the selected census year and territory scope. The instrument is the total divided by 1,000, without area weights. Uncertain matches remain unresolved; missing matched populations or known source gaps make the total unavailable.",
   sep = "\n")
 help_county_overlap_threshold <- "Minimum % of a historical county's area that must overlap with the modern county"
 
 geographic_notes <- c(
-  "Combined water access, 1820" = "One yes/no indicator for whether any part of the county or MSA overlaps the project's original coast, river and canal access map. The river and canal layers already contain buffers, whose width is not documented. The separate water-access measures below use an explicit 10 km distance.",
+  "Water access sum, 1820" = "The sum of three yes/no indicators: access to the coast, rivers and canals in the project's original 1820 layers. Each component equals 1 if its layer intersects the county or MSA, and 0 otherwise. The sum ranges from 0 to 3 and counts the types of water access present. It uses the original coast layer and buffered river and canal layers, intersected with the project's county and MSA boundaries.",
   "Railroads" = "Each selected year adds a separate yes/no indicator: 1 if a mapped railroad intersects the county or MSA in 1840, 1850 or 1861, and 0 otherwise. It measures the presence of a railroad, not the length of the network or distance to a station.",
   "Ruggedness and elevation" = "Adds two variables: terrain ruggedness (how uneven the terrain is) and mean elevation (height above sea level), both in metres. Nunn-Puga ruggedness and PRISM elevation are averaged over the county or MSA using geographic area weights, without population weights.",
   "Wheat and maize suitability" = "Adds separate GAEZ suitability indices for wheat and maize, averaged over the county or MSA using area weights. They describe rainfed production with low inputs under 1981-2010 conditions. Source values run from 0 to 10,000; higher values mean greater suitability. In the regression, both indices are divided by 1,000, so each coefficient refers to a 1,000-point increase in the source index.",
   "Temperature and precipitation" = "Adds three area-weighted PRISM averages: January temperature and July temperature in degrees Celsius, and annual precipitation in millimetres. These describe long-run climate in 1991-2020, independently of the selected modern or historical census year.",
   "Ocean and Great Lakes access" = "Adds two separate yes/no indicators. Each equals 1 if any part of the county or MSA is within 10 km of the ocean shoreline or Great Lakes shoreline, and 0 otherwise. The shorelines use modern Census geography.",
   "Historical river and canal access" = "Adds two separate yes/no indicators for access within 10 km of a river segment with documented steamboat operation and a canal operating in the selected waterway year. Distance is measured from the nearest part of the county or MSA. This river measure covers documented steamboat routes.",
-  "Distance to shores and waterways" = "Adds four separate distances: ocean, Great Lakes, operating rivers and operating canals. Each runs from the county's or MSA's geometric centre to the nearest feature. The regression uses ln(1 + distance in kilometres), so larger values mean greater distance. The centre is based on geography, without population weights.",
+  "Distance to shores and waterways" = "Adds four separate distances: ocean, Great Lakes, operating rivers and operating canals. Each runs from the county's or MSA's geometric centre to the nearest feature. The regression uses distance in 100 km units, without a logarithm or added constant. Zero remains zero. Each coefficient refers to 100 km more distance. The centre is based on geography, without population weights.",
   "Approximate portage access" = "One yes/no indicator for whether any part of the county or MSA is within 10 km of a potential portage location near the boundary between the Coastal Plain and Piedmont. Locations are inferred from river geography and have not been verified as historical portages.",
-  "Waterway reference year" = "Changes only the historical river and canal access and distance measures. It is independent of the historical population instrument and sample years. Combined Water Access 1820 and the railroad controls keep their stated years; modern shorelines and approximate portage locations also stay fixed.",
+  "Waterway reference year" = "Changes only the historical river and canal access and distance measures. It is independent of the historical population instrument and sample years. Water Access Sum 1820 and the railroad controls keep their stated years; modern shorelines and approximate portage locations also stay fixed.",
   "Coverage and sample size" = "Terrain, crop, climate and the separate water measures cover the contiguous United States. Area averages use grid cells with available values; areas with no usable coverage remain missing. Unknown operating dates can also leave water measures missing. Observations with missing values in selected controls are excluded from the regression, so adding controls can reduce the sample. Missing values are never treated as zero."
 )
 
@@ -150,7 +150,7 @@ geographic_help <- function(measures) {
   tagList(lapply(measures, function(measure)
     p(tags$strong(paste0(measure, ": ")), geographic_notes[[measure]])))
 }
-help_controls <- geographic_help(c("Combined water access, 1820", "Railroads"))
+help_controls <- geographic_help(c("Water access sum, 1820", "Railroads"))
 help_geo_controls <- geographic_help(c("Ruggedness and elevation", "Wheat and maize suitability", "Temperature and precipitation"))
 help_water_controls <- geographic_help(c("Ocean and Great Lakes access", "Historical river and canal access", "Distance to shores and waterways", "Approximate portage access"))
 
@@ -192,8 +192,8 @@ resolve_geo_controls <- function(geo_groups = character(), water_groups = charac
     stop("Choose a water-access year from 1790 to 1860, in ten-year steps.")
   water <- list(shoreline = c("ocean_access10", "lakes_access10"),
                 historical_access = paste0(c("river_access_", "canal_access_"), water_year),
-                distance = c("ln1p_dist_ocean", "ln1p_dist_lakes",
-                             paste0(c("ln1p_dist_river_", "ln1p_dist_canal_"), water_year)),
+                distance = c("dist_ocean_100km", "dist_lakes_100km",
+                             paste0(c("dist_river_", "dist_canal_"), water_year, "_100km")),
                 portage = "portage_access10")
   if (any(!geo_groups %in% names(land)) || any(!water_groups %in% names(water)))
     stop("An unknown geographic control group was selected.")
@@ -209,7 +209,7 @@ uses_population_instrument <- function(details) {
 }
 
 approach_name <- function(approach) {
-  if (identical(approach, "employment")) "2b) Employment" else "Employment density"
+  if (identical(approach, "employment")) "Employment" else "Employment density"
 }
 
 instrument_cluster_label <- function(details) {
@@ -234,7 +234,7 @@ control_label <- function(variable, instrument_type = NULL, approach = "density"
   if (variable == "ch_elasticity") return("Ciccone–Hall elasticity (theta − 1)")
   labels <- c(fit_RHS = "Log employment density (instrumented)", RHS = "Log employment density",
               instrument = "Historical density instrument", `(Intercept)` = "Constant",
-              water_1820 = "Combined water access, 1820", railroads_1840 = "Railroads, 1840",
+              water_1820 = "Water access sum, 1820", railroads_1840 = "Railroads, 1840",
               railroads_1850 = "Railroads, 1850", railroads_1861 = "Railroads, 1861",
               rugged_mean = "Terrain ruggedness (m)", elev_mean = "Mean elevation (m)",
               gaez_wheat_suit = "Wheat suitability (per 1,000 points)",
@@ -242,8 +242,8 @@ control_label <- function(variable, instrument_type = NULL, approach = "density"
               tjan = "January temperature (°C)", tjul = "July temperature (°C)",
               precip = "Annual precipitation (mm)", ocean_access10 = "Ocean access within 10 km",
               lakes_access10 = "Great Lakes access within 10 km",
-              ln1p_dist_ocean = "Log(1 + ocean distance in km)",
-              ln1p_dist_lakes = "Log(1 + Great Lakes distance in km)",
+              dist_ocean_100km = "Ocean distance (100 km)",
+              dist_lakes_100km = "Great Lakes distance (100 km)",
               portage_access10 = "Approximate portage access within 10 km")
   if (variable %in% names(labels)) return(unname(labels[[variable]]))
   legacy <- sub("1$", "", variable)
@@ -252,8 +252,8 @@ control_label <- function(variable, instrument_type = NULL, approach = "density"
   year <- sub(".*([0-9]{4})$", "\\1", variable)
   if (grepl("^river_access_", variable)) return(paste0("River access within 10 km, ", year))
   if (grepl("^canal_access_", variable)) return(paste0("Canal access within 10 km, ", year))
-  if (grepl("^ln1p_dist_river_", variable)) return(paste0("Log(1 + river distance in km), ", year))
-  if (grepl("^ln1p_dist_canal_", variable)) return(paste0("Log(1 + canal distance in km), ", year))
+  if (grepl("^dist_river_[0-9]{4}_100km$", variable)) return(paste0("River distance (100 km), ", sub("^dist_river_([0-9]{4})_100km$", "\\1", variable)))
+  if (grepl("^dist_canal_[0-9]{4}_100km$", variable)) return(paste0("Canal distance (100 km), ", sub("^dist_canal_([0-9]{4})_100km$", "\\1", variable)))
   variable
 }
 
@@ -704,7 +704,7 @@ ui <- fluidPage(title = "Agglomeration Effects USA",
                  # ── 2. Analysis Settings ───────────────────────────────
                  h4("2. Analysis Settings"),
                  labeledInput("approach", "Approach:",
-                              selectInput("approach", NULL, c("Employment density" = "density", "2b) Employment" = "employment"), "density"),
+                              selectInput("approach", NULL, c("Employment density" = "density", "Employment" = "employment"), "density"),
                               "help_approach", help_approach),
                  labeledInput("analysis_type", "Analysis Method:",
                               selectInput("analysis_type", NULL, c("IV", "OLS", "First-stage Regression"), "IV"),
@@ -833,11 +833,11 @@ ui <- fluidPage(title = "Agglomeration Effects USA",
                    p(class = "geo-control-note", "Control for physical geography and historical transport. Each box adds one or more separate variables to the regression. Use (?) for definitions and units."),
                    conditionalPanel("input.analysis_level == 'MSA'",
                      labeledInput("msa_controls", "Historical Transport:",
-                       checkboxGroupInput("msa_controls", NULL, c("Combined Water Access 1820"="water_1820", "Railroads 1840"="railroads_1840", "Railroads 1850"="railroads_1850", "Railroads 1861"="railroads_1861"), c("water_1820", "railroads_1840")),
+                       checkboxGroupInput("msa_controls", NULL, c("Water Access Sum 1820"="water_1820", "Railroads 1840"="railroads_1840", "Railroads 1850"="railroads_1850", "Railroads 1861"="railroads_1861"), c("water_1820", "railroads_1840")),
                        "help_msa_controls", help_controls)),
                    conditionalPanel("input.analysis_level == 'County'",
                      labeledInput("county_controls", "Historical Transport:",
-                       checkboxGroupInput("county_controls", NULL, c("Combined Water Access 1820"="water_1820", "Railroads 1840"="railroads_1840", "Railroads 1850"="railroads_1850", "Railroads 1861"="railroads_1861")),
+                       checkboxGroupInput("county_controls", NULL, c("Water Access Sum 1820"="water_1820", "Railroads 1840"="railroads_1840", "Railroads 1850"="railroads_1850", "Railroads 1861"="railroads_1861")),
                        "help_county_controls", help_controls)),
                    labeledInput("geo_controls", "Terrain, Crop Suitability and Climate:",
                      checkboxGroupInput("geo_controls", NULL,
@@ -1179,7 +1179,7 @@ server <- function(input, output, session) {
             instr_col <- glue("GGpop_{iv_year}{suffix}")
             overlap_threshold <- NULL
           } else if (instrument_type == "weighted_density_overlap") {
-            if (approach == "employment") stop("Choose Max Density Overlap or Glaeser and Gottlieb (2009) for 2b) Employment.")
+            if (approach == "employment") stop("Choose Max Density Overlap or Glaeser and Gottlieb (2009) for Employment.")
             sample_col <- glue("iv_overlap_{overlap_threshold}_{sample_year}{suffix}")
             instr_col  <- glue("iv_overlap_{overlap_threshold}_{iv_year}{suffix}")
           } else if (instrument_type == "max_density_overlap") {

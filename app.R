@@ -25,7 +25,7 @@ read_app_data <- function(path, level) {
   available <- names(haven::read_dta(path, n_max = 0))
   missing <- setdiff(c(common, specific), available)
   if (length(missing)) stop(paste("Required data fields are missing:", paste(missing, collapse = ", ")))
-  patterns <- c("^hist_state_fe_[0-9]{4}(_s)?$", "^GGpop_[0-9]{4}(_s)?$",
+  patterns <- c("^hist_state_fe_[0-9]{4}(_s)?$", "^(GG|AW)pop_[0-9]{4}(_s)?$",
     "^(rugged_mean|elev_mean|gaez_wheat_suit|gaez_maize_suit|tjan|tjul|precip|ocean_access10|lakes_access10|portage_access10)$",
     "^(river_access_|canal_access_|dist_.*_100km(_sq)?$)")
   patterns <- c(patterns, if (level == "MSA") c("^MSAol_[0-9]{4}_(5|[1-9]0)(_s)?$",
@@ -103,7 +103,7 @@ help_mining_filter_active<- "Exclude geographic units whose share of mining in G
 help_mining_threshold    <- "Drops all geographic units with a share of mining in GDP above the chosen level."
 help_se_spec             <- paste(
   "Standard‑error option:",
-  " • Cluster by historical instrument – groups observations sharing an instrument. Under employment overlap, groups share the same selected historical county. County matching clusters by the modern MSA or county.",
+  " • Cluster by historical instrument – groups observations sharing an instrument. Under employment overlap, groups share the same selected historical county. County matching and area-weighted population cluster by the modern MSA or county.",
   " • Cluster by state – clusters at the modern state level. ",
   " • Spatial correlation (Conley standard errors) – distance based correction using uniform kernel and a distance cutoff (distance cutoff chosen below).",
   " • Robust – heteroskedasticity robust standard errors.",
@@ -114,11 +114,15 @@ help_spatial_cutoff      <- "Distance in km beyond which spatial correlation is 
 help_spatial_kernel      <- "Uniform kernel with constant weight within cutoff distance."
 
 # MSA‑specific settings
+area_population_omissions <- "Walton (1810), Hopefield–St. Francis (1810) and Miller (1830) are omitted because their historical boundaries are missing."
 help_msa_instrument_type     <- paste(
   "How to construct the historical instrument:",
   " Overlap – selects the historical county with the highest population density among counties with at least the chosen percentage of their territory overlapping the modern MSA. Employment density uses that county's density; Employment uses its full population divided by 1,000, without area weights.",
   " Glaeser and Gottlieb (2009) – historical county identities are matched to current county identities and then to the project's current MSA county membership. Whole historical county populations are summed for the selected census year and territory scope, without area weights. The instrument is this total divided by 1,000 (thousands of people).",
   " Counties without a reliable match are left unresolved. A missing population for a matched county or a known source gap makes the MSA total unavailable.",
+  " Area-weighted population – multiplies each historical county's population by the fraction of its area inside the modern MSA, then sums these contributions. The MSA is the union of the same current counties used for county matching. This assumes uniform population density within each historical county. The instrument is the allocated population divided by 1,000 (thousands of people).",
+  " Area weights use historical census years 1790–1860. Totals use mapped historical counties within the selected state or territory scope. A total remains unavailable if the unit has no mapped overlap or an overlapping historical county has unknown population; a zero recorded population remains zero.",
+  area_population_omissions,
   sep = "\n")
 help_msa_overlap_pct         <- "Minimum % of a historical county's area that must overlap with the MSA."
 
@@ -129,6 +133,9 @@ help_county_instrument_type  <- paste(
   " • Max density overlap – selects the historical county with the highest population density among counties meeting the chosen overlap percentage. Employment density uses that county's density; Employment uses its full population divided by 1,000, without area weights.",
   " • Weighted density overlap – averages historical county densities using area-overlap weights. This option is available for employment density only.",
   " • Glaeser and Gottlieb (2009) – matches historical county identities to the project's current county units and sums their full populations for the selected census year and territory scope. The instrument is the total divided by 1,000, without area weights. Uncertain matches remain unresolved; missing matched populations or known source gaps make the total unavailable.",
+  " • Area-weighted population – multiplies each historical county's population by the fraction of its area inside the modern county, then sums these contributions. This assumes uniform population density within each historical county. The instrument is the allocated population divided by 1,000 (thousands of people).",
+  " Area weights use historical census years 1790–1860. Totals use mapped historical counties within the selected state or territory scope. A total remains unavailable if the unit has no mapped overlap or an overlapping historical county has unknown population; a zero recorded population remains zero.",
+  area_population_omissions,
   sep = "\n")
 help_county_overlap_threshold <- "Minimum % of a historical county's area that must overlap with the modern county"
 
@@ -205,8 +212,12 @@ is_county_population <- function(details) {
   identical(details$instrument_type, "county_population")
 }
 
+is_aggregated_population <- function(details) {
+  any(details$instrument_type %in% c("county_population", "area_population"))
+}
+
 uses_population_instrument <- function(details) {
-  is_county_population(details) || identical(details$approach, "employment")
+  is_aggregated_population(details) || identical(details$approach, "employment")
 }
 
 approach_name <- function(approach) {
@@ -214,7 +225,7 @@ approach_name <- function(approach) {
 }
 
 instrument_cluster_label <- function(details) {
-  if (is_county_population(details)) paste(details$analysis_level, "clusters")
+  if (is_aggregated_population(details)) paste(details$analysis_level, "clusters")
   else if (identical(details$approach, "employment")) "Historical county clusters"
   else "Instrument clusters"
 }
@@ -223,12 +234,13 @@ instrument_name <- function(type, approach = "density") {
   if (identical(approach, "employment") && type %in% c("overlap", "max_density_overlap"))
     return("Overlap (density-selected county population)")
   switch(type, county_population = "Glaeser and Gottlieb (2009)",
+    area_population = "Area-weighted population",
     overlap = "Overlap", max_density_overlap = "Max Density Overlap",
     weighted_density_overlap = "Weighted Density Overlap", type)
 }
 
 control_label <- function(variable, instrument_type = NULL, approach = "density") {
-  if (variable == "instrument" && (identical(instrument_type, "county_population") || identical(approach, "employment")))
+  if (variable == "instrument" && (is_aggregated_population(list(instrument_type = instrument_type)) || identical(approach, "employment")))
     return("Historical population (thousands of people)")
   if (identical(approach, "employment") && variable %in% c("RHS", "fit_RHS"))
     return(if (variable == "fit_RHS") "Log employment (instrumented)" else "Log employment")
@@ -750,7 +762,7 @@ ui <- fluidPage(title = "Agglomeration Effects USA",
                                 "help_msa_iv_year", help_iv_year),
                    labeledInput("msa_instrument_type", "Match of Historical to Modern Geographic Units:",
                                 selectInput("msa_instrument_type", NULL,
-                                  c("overlap" = "overlap", "Glaeser and Gottlieb (2009)" = "county_population"), "overlap"),
+                                  c("overlap" = "overlap", "Glaeser and Gottlieb (2009)" = "county_population", "Area-weighted population" = "area_population"), "overlap"),
                                 "help_msa_instrument_type", help_msa_instrument_type),
                    conditionalPanel("input.msa_instrument_type == 'overlap'",
                    labeledInput("msa_overlap_pct", "Overlap %:",
@@ -800,9 +812,9 @@ ui <- fluidPage(title = "Agglomeration Effects USA",
                                 selectInput("county_iv_year", NULL, seq(1790, 1860, 10), 1840),
                                 "help_county_iv_year", help_iv_year),
                    labeledInput("county_instrument_type", "Match of Historical to Modern Geographic Units:",
-                                selectInput("county_instrument_type", NULL, c("Max Density Overlap"="max_density_overlap", "Weighted Density Overlap"="weighted_density_overlap", "Glaeser and Gottlieb (2009)"="county_population"), "max_density_overlap"),
+                                selectInput("county_instrument_type", NULL, c("Max Density Overlap"="max_density_overlap", "Weighted Density Overlap"="weighted_density_overlap", "Glaeser and Gottlieb (2009)"="county_population", "Area-weighted population"="area_population"), "max_density_overlap"),
                                 "help_county_instrument_type", help_county_instrument_type),
-                   conditionalPanel("input.county_instrument_type != 'county_population'",
+                   conditionalPanel("input.county_instrument_type == 'max_density_overlap' || input.county_instrument_type == 'weighted_density_overlap'",
                    labeledInput("county_overlap_threshold", "Overlap Threshold %:",
                                 selectInput("county_overlap_threshold", NULL, c(5,10,20,30,40,50,60,70,80,90), 5),
                                 "help_county_overlap_threshold", help_county_overlap_threshold)),
@@ -898,19 +910,19 @@ server <- function(input, output, session) {
   map_output <- reactiveVal(NULL)
 
   output$msa_iv_year_label <- renderText({
-    if (identical(input$msa_instrument_type, "county_population") || identical(input$approach, "employment"))
+    if (is_aggregated_population(list(instrument_type = input$msa_instrument_type)) || identical(input$approach, "employment"))
       "Year of the Historical Population (Historical Census Year):"
     else "Year of the Historical Population Density (Historical Census Year):"
   })
 
   output$county_iv_year_label <- renderText({
-    if (identical(input$county_instrument_type, "county_population") || identical(input$approach, "employment"))
+    if (is_aggregated_population(list(instrument_type = input$county_instrument_type)) || identical(input$approach, "employment"))
       "Year of the Historical Population (Historical Census Year):"
     else "Year of the Historical Population Density (Historical Census Year):"
   })
 
   observeEvent(input$approach, {
-    choices <- c("Max Density Overlap" = "max_density_overlap", "Weighted Density Overlap" = "weighted_density_overlap", "Glaeser and Gottlieb (2009)" = "county_population")
+    choices <- c("Max Density Overlap" = "max_density_overlap", "Weighted Density Overlap" = "weighted_density_overlap", "Glaeser and Gottlieb (2009)" = "county_population", "Area-weighted population" = "area_population")
     if (identical(input$approach, "employment")) choices <- choices[choices != "weighted_density_overlap"]
     selected <- isolate(input$county_instrument_type)
     if (is.null(selected) || !selected %in% choices) selected <- "max_density_overlap"
@@ -925,14 +937,14 @@ server <- function(input, output, session) {
     updateSelectInput(session, "analysis_type", choices = methods, selected = selected)
     standard_errors <- c("Cluster on Instrument" = "cluster_instrument",
       "Cluster on State" = "cluster_state", "Spatial (Conley)" = "spatial", "Robust" = "robust")
-    if (identical(input$msa_instrument_type, "county_population")) names(standard_errors)[1] <- "Cluster on MSA"
+    if (is_aggregated_population(list(instrument_type = input$msa_instrument_type))) names(standard_errors)[1] <- "Cluster on MSA"
     else if (identical(input$approach, "employment")) names(standard_errors)[1] <- "Cluster on Historical County"
     if (ch) standard_errors <- standard_errors[standard_errors != "spatial"]
     selected_se <- isolate(input$msa_se_spec)
     if (is.null(selected_se) || !selected_se %in% standard_errors) selected_se <- "cluster_instrument"
     updateSelectInput(session, "msa_se_spec", choices = standard_errors, selected = selected_se)
     county_errors <- c("Cluster on Instrument" = "cluster_instrument", "Cluster on State" = "cluster_state", "Spatial (Conley)" = "spatial", "Robust" = "robust")
-    if (identical(input$county_instrument_type, "county_population")) names(county_errors)[1] <- "Cluster on County"
+    if (is_aggregated_population(list(instrument_type = input$county_instrument_type))) names(county_errors)[1] <- "Cluster on County"
     else if (identical(input$approach, "employment")) names(county_errors)[1] <- "Cluster on Historical County"
     county_se <- isolate(input$county_se_spec)
     if (is.null(county_se) || !county_se %in% county_errors) county_se <- "cluster_instrument"
@@ -1011,6 +1023,10 @@ server <- function(input, output, session) {
             sample_col <- glue("GGpop_{sample_year}{suffix}")
             instr_col <- glue("GGpop_{iv_year}{suffix}")
             overlap_pct <- NULL
+          } else if (instrument_type == "area_population") {
+            sample_col <- glue("AWpop_{sample_year}{suffix}")
+            instr_col <- glue("AWpop_{iv_year}{suffix}")
+            overlap_pct <- NULL
           } else if (instrument_type == "overlap") {
             if (approach == "employment") {
               sample_col <- glue("MSApop_{sample_year}_{overlap_pct}{suffix}")
@@ -1023,7 +1039,7 @@ server <- function(input, output, session) {
           } else stop("Choose a supported MSA instrument construction.")
           
           # Apply territory filtering for states-only analysis
-          if (sample_scope == "states_only" && instrument_type != "county_population") {
+          if (sample_scope == "states_only" && !instrument_type %in% c("county_population", "area_population")) {
             fe_var_name_full <- glue("hist_state_fe_{iv_year}")  # without _s suffix
             
             # Try to find MSA identifier column
@@ -1126,7 +1142,7 @@ server <- function(input, output, session) {
           }
           
           # Apply territory filtering for states-only analysis
-          if (sample_scope == "states_only" && instrument_type != "county_population") {
+          if (sample_scope == "states_only" && !instrument_type %in% c("county_population", "area_population")) {
             fe_var_name_full <- glue("hist_state_fe_{iv_year}")  # without _s suffix
             
             # Try to find county identifier column
@@ -1182,8 +1198,12 @@ server <- function(input, output, session) {
             sample_col <- glue("GGpop_{sample_year}{suffix}")
             instr_col <- glue("GGpop_{iv_year}{suffix}")
             overlap_threshold <- NULL
+          } else if (instrument_type == "area_population") {
+            sample_col <- glue("AWpop_{sample_year}{suffix}")
+            instr_col <- glue("AWpop_{iv_year}{suffix}")
+            overlap_threshold <- NULL
           } else if (instrument_type == "weighted_density_overlap") {
-            if (approach == "employment") stop("Choose Max Density Overlap or Glaeser and Gottlieb (2009) for Employment.")
+            if (approach == "employment") stop("Choose Max Density Overlap, Glaeser and Gottlieb (2009), or Area-weighted population for Employment.")
             sample_col <- glue("iv_overlap_{overlap_threshold}_{sample_year}{suffix}")
             instr_col  <- glue("iv_overlap_{overlap_threshold}_{iv_year}{suffix}")
           } else if (instrument_type == "max_density_overlap") {
@@ -1233,15 +1253,15 @@ server <- function(input, output, session) {
         df <- df %>% mutate(across(all_of(c(sample_col, instr_col)), as.numeric))
         df <- df %>%
           mutate(.sample_iv = .data[[sample_col]], instrument = .data[[instr_col]])
-        if (instrument_type == "county_population" || approach == "employment") {
+        if (instrument_type %in% c("county_population", "area_population") || approach == "employment") {
           df <- df %>%
             filter(is.finite(.sample_iv) & .sample_iv >= 0 & is.finite(instrument) & instrument >= 0) %>%
             mutate(instrument = instrument / 1000)
         } else df <- df %>% filter(!is.na(.sample_iv) & !is.na(instrument))
         df <- df %>% select(-.sample_iv)
-        if (instrument_type == "county_population") {
+        if (instrument_type %in% c("county_population", "area_population")) {
           unit_id <- if (analysis_level == "MSA") "msafips" else "geofips"
-          if (!unit_id %in% names(df)) stop("Modern geographic identifiers are required for the county-matched population instrument.")
+          if (!unit_id %in% names(df)) stop("Modern geographic identifiers are required for the population instrument.")
           df$clusterID <- as.integer(as.factor(df[[unit_id]]))
         } else if (approach == "employment") {
           if (any(is.na(df[[instrument_id_col]]) | trimws(df[[instrument_id_col]]) == ""))
@@ -1544,6 +1564,11 @@ server <- function(input, output, session) {
       note <- paste0(note, ' The instrument sums full historical county populations matched to the modern ',
         if (analysis_level == "MSA") 'MSA county membership' else 'county unit',
         ', divided by 1,000 (thousands of people), without area weights.')
+    else if (identical(instrument_type, "area_population"))
+      note <- paste0(note, ' The instrument sums mapped historical county populations multiplied by the fraction of each historical county area inside the modern ',
+        if (analysis_level == "MSA") 'MSA' else 'county',
+        ', divided by 1,000 (thousands of people). This assumes uniform population density within each historical county. ',
+        escape(area_population_omissions))
     else if (identical(approach, "employment"))
       note <- paste0(note, ' The instrument is the full population of the highest-density historical county meeting the ',
         escape(overlap_pct), '% overlap threshold, divided by 1,000 (thousands of people), without area weights.')
@@ -1619,7 +1644,7 @@ server <- function(input, output, session) {
     # Build comprehensive analysis details
     se_description <- details$se_spec
     if (details$se_spec == "cluster_instrument" && !is.null(details$cluster_data$clusterID)) {
-      se_description <- if (is_county_population(details)) paste("Cluster on", details$analysis_level) else if (identical(details$approach, "employment")) "Cluster on historical county" else "Cluster on historical instrument"
+      se_description <- if (is_aggregated_population(details)) paste("Cluster on", details$analysis_level) else if (identical(details$approach, "employment")) "Cluster on historical county" else "Cluster on historical instrument"
     } else if (details$se_spec == "cluster_state" && !is.null(details$cluster_data$state_id)) {
       se_description <- "Cluster on modern state"
     } else if (details$se_spec == "spatial") {

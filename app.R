@@ -68,6 +68,10 @@ historical_census_years <- seq(1790, 1900, 10)
 help_stock_wright <- paste("Stock–Wright LM S tests whether the CH elasticity is zero (theta = 1).",
   "Its p-value uses a chi-squared distribution with one degree of freedom and is robust to weak instruments when the model's moment assumptions hold.",
   "It tests the zero-effect hypothesis; it does not measure instrument strength.")
+help_ch_wald <- paste("Wald tests the same hypothesis: CH elasticity = 0 (theta = 1).",
+  "It squares the elasticity divided by its standard error and uses a chi-squared distribution with one degree of freedom.",
+  "The 95% Wald interval is the estimate plus or minus 1.96 standard errors, using the selected robust or clustered covariance.",
+  "Wald inference assumes sufficiently strong identification; it can be misleading with weak instruments.")
 
 # Master settings
 help_analysis_level      <- "Pick metropolitan statistical areas (MSAs), counties, or states. State estimates use the Ciccone–Hall model and the 48 contiguous states."
@@ -76,7 +80,7 @@ help_state_ch <- paste("Ciccone and Hall (1996) relate state productivity to emp
   "The outcome is log state GDP per job for all industries. BEA combined county units are kept together. This specification uses robust standard errors and no schooling adjustment or state fixed effects.",
   "County matching sums historical populations assigned to current counties in each state. A known total reported jointly for several counties can be used when all belong to the same state. Area weighting allocates historical population by geographic overlap with current counties, assuming uniform density within each historical reporting area. The instrument is population in thousands.",
   "Only states with valid historical population and complete county employment and land area enter the model. Area-weighted state population also requires at least 95% geographic coverage. Known unallocated population makes the affected state total unavailable. The historical year can therefore change the sample.",
-  help_stock_wright, sep = "\n")
+  help_stock_wright, help_ch_wald, sep = "\n")
 help_year_modern         <- "Year in which modern productivity and employment are measured."
 help_approach <- paste(
   "Employment density uses log total employment per unit of area, or the Ciccone–Hall index for MSAs.",
@@ -87,7 +91,7 @@ help_analysis_type       <- paste(
   " • OLS – regress modern productivity on the employment measure selected under Approach.",
   " • IV – instrument that employment measure with the selected historical population or density measure.",
   " • First-stage regression – regress the selected modern employment measure on the historical instrument.",
-  paste("For CH IV:", help_stock_wright),
+  paste("For CH IV:", help_stock_wright, help_ch_wald),
   sep = "\n")
 
 # Fixed effects & scope
@@ -527,6 +531,30 @@ ch_coeftable <- function(model) {
   cbind(Estimate = estimate, `Std. Error` = se, `t value` = statistic, `Pr(>|t|)` = p)
 }
 
+ch_wald_diagnostic <- function(model, level = .95) {
+  if (!inherits(model, "ch_model") || !identical(model$method, "IV")) return(NULL)
+  if (length(level) != 1L || !is.finite(level) || level <= 0 || level >= 1)
+    stop("The Wald confidence level must be between zero and one.")
+  unavailable <- function(reason) list(statistic = NA_real_, p_value = NA_real_, df = 1L,
+    null_elasticity = 0, estimate = NA_real_, std_error = NA_real_, conf_low = NA_real_,
+    conf_high = NA_real_, conf_level = level, status = "unavailable", reason = reason)
+  term <- "ch_elasticity"
+  if (!term %in% names(model$coefficients) || !is.matrix(model$covariance) ||
+      !term %in% rownames(model$covariance) || !term %in% colnames(model$covariance))
+    return(unavailable("The elasticity estimate or covariance is unavailable."))
+  estimate <- unname(model$coefficients[term])
+  variance <- model$covariance[term, term]
+  if (!is.finite(estimate) || !is.finite(variance) || variance <= 0)
+    return(unavailable("The elasticity needs a finite estimate and a positive variance."))
+  se <- sqrt(variance)
+  statistic <- (estimate / se)^2
+  margin <- qnorm((1 + level) / 2) * se
+  list(statistic = statistic, p_value = pchisq(statistic, df = 1L, lower.tail = FALSE),
+    df = 1L, null_elasticity = 0, estimate = estimate, std_error = se,
+    conf_low = estimate - margin, conf_high = estimate + margin, conf_level = level,
+    status = "available", reason = "")
+}
+
 
 app_model_table <- function(model) {
   if (inherits(model, "ch_model")) return(ch_coeftable(model))
@@ -569,6 +597,17 @@ model_coefficients <- function(details) {
       output$stock_wright_df <- model$stock_wright$df
       output$stock_wright_null_elasticity <- model$stock_wright$null_elasticity
       output$stock_wright_note <- stock_wright_text(model$stock_wright)
+    }
+    wald <- ch_wald_diagnostic(model)
+    if (!is.null(wald)) {
+      output$wald_chi_squared <- wald$statistic
+      output$wald_p_value <- wald$p_value
+      output$wald_df <- wald$df
+      output$wald_null_elasticity <- wald$null_elasticity
+      output$wald_conf_level <- wald$conf_level
+      output$wald_conf_low <- wald$conf_low
+      output$wald_conf_high <- wald$conf_high
+      output$wald_note <- if (wald$status == "available") help_ch_wald else paste("Wald unavailable:", wald$reason)
     }
     output
   })
@@ -1733,6 +1772,20 @@ server <- function(input, output, session) {
         if (diagnostic$p_value < 0.0001) "&lt;0.0001" else sprintf("%.4f", diagnostic$p_value)
       }, character(1))
       parts <- c(parts, row("Stock–Wright LM S", values), row("Stock–Wright p-value", probabilities))
+      wald <- lapply(models, ch_wald_diagnostic)
+      wald_values <- vapply(wald, function(diagnostic) {
+        if (diagnostic$status != "available") "—" else sprintf("%.4f", diagnostic$statistic)
+      }, character(1))
+      wald_probabilities <- vapply(wald, function(diagnostic) {
+        if (diagnostic$status != "available") return("—")
+        if (diagnostic$p_value < 0.0001) "&lt;0.0001" else sprintf("%.4f", diagnostic$p_value)
+      }, character(1))
+      wald_intervals <- vapply(wald, function(diagnostic) {
+        if (diagnostic$status != "available") return("—")
+        paste0("[", format_value(diagnostic$conf_low), ", ", format_value(diagnostic$conf_high), "]")
+      }, character(1))
+      parts <- c(parts, row("Wald χ² (elasticity = 0)", wald_values),
+        row("Wald p-value", wald_probabilities), row("95% Wald confidence interval", wald_intervals))
     }
     if (!is.null(model_clusters) && any(!is.na(model_clusters))) {
       label <- if (se_spec == "cluster_instrument") {
@@ -1762,7 +1815,7 @@ server <- function(input, output, session) {
     if (is_ch) note <- paste0(note, ' Ciccone–Hall estimates theta in log[sum(n^theta a^(1−theta))/sum(n)], using county employment n and land area a. The reported elasticity is theta − 1. BEA combined county units are kept together.')
     if (is_ch) note <- paste0(note, ' ', escape(models[[1]]$inference))
     if (is_ch && analysis_type == "IV") {
-      note <- paste0(note, ' ', escape(help_stock_wright))
+      note <- paste0(note, ' ', escape(help_stock_wright), ' ', escape(help_ch_wald))
       for (name in model_names) {
         diagnostic <- models[[name]]$stock_wright
         if (!is.null(diagnostic) && !identical(diagnostic$status, "available"))

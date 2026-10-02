@@ -12,7 +12,13 @@ run_checked <- function(settings, exports = FALSE) {
       stopifnot(nobs(model) > 0L, all(is.finite(coef(model))), all(is.finite(vcov(model))))
       if (inherits(model, "ch_model") && result$analysis_type == "IV") {
         stopifnot(model$stock_wright$status == "available", model$stock_wright$nobs == nobs(model),
-          grepl("Stock–Wright LM S", output$results_table$html, fixed = TRUE))
+          grepl("Stock–Wright LM S", output$results_table$html, fixed = TRUE),
+          grepl("Wald χ² (elasticity = 0)", output$results_table$html, fixed = TRUE),
+          grepl("Wald p-value", output$results_table$html, fixed = TRUE),
+          grepl("95% Wald confidence interval", output$results_table$html, fixed = TRUE))
+        wald <- app$ch_wald_diagnostic(model)
+        stopifnot(wald$status == "available", wald$null_elasticity == 0,
+          isTRUE(all.equal(wald$p_value, unname(app$app_model_pvalue(model)["ch_elasticity"]), tolerance = 1e-10)))
       } else stopifnot(is.null(model$stock_wright))
       if (!inherits(model, "ch_model") && result$analysis_type == "IV") {
         stopifnot(nobs(model) == nobs(result$first_stage_models[[name]]))
@@ -32,6 +38,14 @@ run_checked <- function(settings, exports = FALSE) {
       csv <- read.csv(output$download_coefficients)
       stopifnot(all(csv$geography == result$analysis_level), all(csv$instrument_year == result$iv_year),
         all(csv$instrument_construction == app$instrument_name(result$instrument_type, result$approach)))
+      if (inherits(result$models[[1]], "ch_model") && result$analysis_type == "IV") {
+        main <- csv[csv$term == "ch_elasticity", ]
+        stopifnot(all(main$wald_df == 1L), all(main$wald_null_elasticity == 0),
+          all(main$wald_conf_level == .95),
+          isTRUE(all.equal(main$wald_p_value, main$p_value, tolerance = 1e-10)),
+          isTRUE(all.equal(main$wald_conf_low, main$conf_low, tolerance = 1e-10)),
+          isTRUE(all.equal(main$wald_conf_high, main$conf_high, tolerance = 1e-10)))
+      } else stopifnot(!"wald_chi_squared" %in% names(csv))
       html <- paste(readLines(output$download_results, warn = FALSE), collapse = "\n")
       stopifnot(grepl('<h2>Geographic controls</h2>', html, fixed = TRUE),
         grepl(app$instrument_name(result$instrument_type, result$approach), html, fixed = TRUE))
@@ -61,7 +75,7 @@ for (scope in c("states_only", "states_territories")) for (year in c(1870, 1880,
   for (type in c("county_population", "area_population")) {
     run_checked(list(analysis_level = "MSA", analysis_type = "IV", msa_density_measure = "CH",
       msa_sample_year = "1900", msa_iv_year = as.character(year), msa_instrument_type = type,
-      sample_scope = scope))
+      sample_scope = scope), exports = year == 1900 && scope == "states_only")
   }
 }
 for (level in c("MSA", "County")) for (method in c("OLS", "First-stage Regression")) {

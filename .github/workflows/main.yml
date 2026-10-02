@@ -28,10 +28,29 @@ jobs:
 
       - name: Install R Dependencies
         run: |
-          R -e "install.packages(c('shiny', 'fixest', 'dplyr', 'haven', 'glue', 'stringr', 'shinycssloaders', 'DT', 'ggplot2', 'rsconnect'), repos = 'https://cloud.r-project.org')"
+          R -e "install.packages(c('shiny', 'fixest', 'dplyr', 'haven', 'glue', 'stringr', 'shinycssloaders', 'DT', 'ggplot2', 'rsconnect', 'testthat', 'jsonlite'), repos = 'https://cloud.r-project.org')"
+
+      - name: Check app models and compare historical instruments
+        env:
+          APP_TEST_OUTPUT: /tmp/agglomeration-checks
+        run: |
+          Rscript tests/check_data_size.R
+          Rscript tests/check_models.R
+          Rscript tests/check_state.R
+          Rscript tests/compare_coefficients.R
+          Rscript tests/compare_instrument_years.R
+
+      - name: Save validation results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-validation
+          path: /tmp/agglomeration-checks
+          if-no-files-found: ignore
 
       - name: Create .rscignore file
-        run: echo "renv.lock" > .rscignore
+        run: |
+          printf '%s\n' 'renv.lock' 'tests' '.github' > .rscignore
 
       - name: Deploy to shinyapps.io
         run: |

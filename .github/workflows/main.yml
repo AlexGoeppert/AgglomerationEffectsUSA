@@ -34,6 +34,7 @@ jobs:
         env:
           APP_TEST_OUTPUT: /tmp/agglomeration-checks
         run: |
+          Rscript tests/check_stock_wright.R
           Rscript tests/check_data_size.R
           Rscript tests/check_models.R
           Rscript tests/check_state.R

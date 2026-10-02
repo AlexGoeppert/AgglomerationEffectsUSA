@@ -65,6 +65,9 @@ get_territory_exclusions <- function(data, fe_column_name, id_column) {
 
 # --- 4. Standardized help‑text strings  --------------------------------------
 historical_census_years <- seq(1790, 1900, 10)
+help_stock_wright <- paste("Stock–Wright LM S tests whether the CH elasticity is zero (theta = 1).",
+  "Its p-value uses a chi-squared distribution with one degree of freedom and is robust to weak instruments when the model's moment assumptions hold.",
+  "It tests the zero-effect hypothesis; it does not measure instrument strength.")
 
 # Master settings
 help_analysis_level      <- "Pick metropolitan statistical areas (MSAs), counties, or states. State estimates use the Ciccone–Hall model and the 48 contiguous states."
@@ -72,7 +75,8 @@ help_state_ch <- paste("Ciccone and Hall (1996) relate state productivity to emp
   "The model estimates theta in log[sum(n^theta a^(1−theta))/sum(n)], where n is county employment and a is county land area. The table reports theta − 1.",
   "The outcome is log state GDP per job for all industries. BEA combined county units are kept together. This specification uses robust standard errors and no schooling adjustment or state fixed effects.",
   "County matching sums historical populations assigned to current counties in each state. A known total reported jointly for several counties can be used when all belong to the same state. Area weighting allocates historical population by geographic overlap with current counties, assuming uniform density within each historical reporting area. The instrument is population in thousands.",
-  "Only states with valid historical population and complete county employment and land area enter the model. Area-weighted state population also requires at least 95% geographic coverage. Known unallocated population makes the affected state total unavailable. The historical year can therefore change the sample.", sep = "\n")
+  "Only states with valid historical population and complete county employment and land area enter the model. Area-weighted state population also requires at least 95% geographic coverage. Known unallocated population makes the affected state total unavailable. The historical year can therefore change the sample.",
+  help_stock_wright, sep = "\n")
 help_year_modern         <- "Year in which modern productivity and employment are measured."
 help_approach <- paste(
   "Employment density uses log total employment per unit of area, or the Ciccone–Hall index for MSAs.",
@@ -83,6 +87,7 @@ help_analysis_type       <- paste(
   " • OLS – regress modern productivity on the employment measure selected under Approach.",
   " • IV – instrument that employment measure with the selected historical population or density measure.",
   " • First-stage regression – regress the selected modern employment measure on the historical instrument.",
+  paste("For CH IV:", help_stock_wright),
   sep = "\n")
 
 # Fixed effects & scope
@@ -302,6 +307,60 @@ ch_index_terms <- function(theta, employment, area) {
        second_derivative = rowSums(weight * (log_density - derivative)^2) / total)
 }
 
+stock_wright_lm_s <- function(y, instrument, X = NULL, cluster = NULL, design_qr = NULL) {
+  n <- length(y)
+  groups <- if (is.null(cluster)) NA_integer_ else length(unique(cluster))
+  unavailable <- function(reason) list(statistic = NA_real_, p_value = NA_real_, df = 1L,
+    null_elasticity = 0, nobs = n, clusters = groups, status = "unavailable", reason = reason)
+  if (!n || length(instrument) != n || any(!is.finite(y)) || any(!is.finite(instrument)))
+    return(unavailable("The null-moment inputs are incomplete."))
+  if (!is.null(cluster) && (length(cluster) != n || anyNA(cluster) || groups < 2L))
+    return(unavailable("At least two complete clusters are needed."))
+  if (is.null(design_qr)) {
+    if (is.null(X)) X <- matrix(1, n, 1L)
+    X <- as.matrix(X)
+    if (nrow(X) != n || !ncol(X) || any(!is.finite(X)))
+      return(unavailable("The nuisance-variable inputs are incomplete."))
+    scale_x <- sqrt(colSums(X^2))
+    scale_x[scale_x == 0] <- 1
+    design_qr <- qr(sweep(X, 2L, scale_x, "/"), tol = 1e-10)
+  }
+  if (n <= design_qr$rank) return(unavailable("No residual variation remains after controls and fixed effects."))
+  # Partial out the same nuisance regressors under H0: theta = 1. Use an uncentered
+  # score covariance, with no HC1 or cluster small-sample adjustment.
+  scale_y <- max(abs(y))
+  scale_z <- max(abs(instrument))
+  if (scale_y == 0 || scale_z == 0) return(unavailable("The null-moment variance is zero."))
+  yn <- y / scale_y
+  zn <- instrument / scale_z
+  yr <- qr.resid(design_qr, yn)
+  zr <- qr.resid(design_qr, zn)
+  if (sqrt(sum(zr^2)) <= 1e-10 * sqrt(sum(zn^2)))
+    return(unavailable("The instrument has no variation after controls and fixed effects."))
+  if (sqrt(sum(yr^2)) <= 1e-10 * sqrt(sum(yn^2)))
+    return(unavailable("The null-moment variance is zero."))
+  score <- yr * zr
+  scale_score <- max(abs(score))
+  if (!is.finite(scale_score) || scale_score == 0) return(unavailable("The null-moment variance is zero."))
+  score <- score / scale_score
+  cluster_score <- if (is.null(cluster)) score else as.numeric(rowsum(score, cluster, reorder = FALSE))
+  variance <- sum(cluster_score^2)
+  if (!is.finite(variance) || variance <= .Machine$double.eps^2 * sum(score^2))
+    return(unavailable("The null-moment variance is zero."))
+  statistic <- sum(score)^2 / variance
+  list(statistic = statistic, p_value = pchisq(statistic, df = 1L, lower.tail = FALSE), df = 1L,
+    null_elasticity = 0, nobs = n, clusters = groups, status = "available", reason = "")
+}
+
+stock_wright_text <- function(diagnostic) {
+  if (is.null(diagnostic)) return(NULL)
+  if (!identical(diagnostic$status, "available"))
+    return(paste("Stock–Wright LM S unavailable:", diagnostic$reason))
+  p_text <- if (diagnostic$p_value < 0.0001) "p < 0.0001" else sprintf("p = %.4f", diagnostic$p_value)
+  paste0("Stock–Wright LM S (H0: CH elasticity = 0): ", sprintf("%.4f", diagnostic$statistic),
+    "; ", p_text, " (chi-squared, 1 df; N = ", diagnostic$nobs, ").")
+}
+
 fit_ch_model <- function(data, dep_var, controls_vec = character(), fe_part = "0",
                          method = c("IV", "OLS"), se_spec = "robust",
                          n_cols = grep("^nc[0-9]+$", names(data), value = TRUE),
@@ -364,7 +423,11 @@ fit_ch_model <- function(data, dep_var, controls_vec = character(), fe_part = "0
   design_qr <- qr(Xs, tol = 1e-10)
   n <- length(y)
   k <- ncol(X) + 1L
-  if (n <= k) stop("Too few observations remain for the selected CH model and fixed effects.")
+  stock_wright <- if (method == "IV") stock_wright_lm_s(y, d$instrument, design_qr = design_qr,
+    cluster = if (is.null(cluster_col)) NULL else d[[cluster_col]]) else NULL
+  fail <- function(message) stop(errorCondition(message, class = "ch_fit_error", stock_wright = stock_wright))
+  tryCatch({
+  if (n <= k) fail("Too few observations remain for the selected CH model and fixed effects.")
   partial <- function(x) qr.resid(design_qr, x)
   yr <- partial(y)
   index <- function(theta) ch_index_terms(theta, employment, area)
@@ -372,19 +435,19 @@ fit_ch_model <- function(data, dep_var, controls_vec = character(), fe_part = "0
   theta_grid <- sort(unique(c(1e-7, seq(0.05, 3, by = 0.05), 4, 8, 16, 32)))
   rss_grid <- vapply(theta_grid, objective, numeric(1))
   best <- which.min(rss_grid)
-  if (best %in% c(1L, length(theta_grid))) stop("The CH least-squares solution is at the search boundary; this specification is not identified reliably.")
+  if (best %in% c(1L, length(theta_grid))) fail("The CH least-squares solution is at the search boundary; this specification is not identified reliably.")
   nls_fit <- optimize(objective, interval = theta_grid[c(best - 1L, best + 1L)], tol = 1e-11)
   theta <- nls_fit$minimum
   if (method == "IV") {
     zr <- partial(d$instrument)
     if (sqrt(sum(zr^2)) <= 1e-10 * max(1, sqrt(sum(d$instrument^2)))) {
-      stop("The historical instrument has no variation after the selected controls and fixed effects.")
+      fail("The historical instrument has no variation after the selected controls and fixed effects.")
     }
     zr <- zr / sqrt(sum(zr^2))
     moment <- function(theta) sum(zr * (yr - partial(index(theta)$value)))
     moment_grid <- vapply(theta_grid, moment, numeric(1))
     crossings <- which(head(moment_grid, -1L) * tail(moment_grid, -1L) <= 0)
-    if (!length(crossings)) stop("The nonlinear IV moment has no positive-theta solution for this specification.")
+    if (!length(crossings)) fail("The nonlinear IV moment has no positive-theta solution for this specification.")
     roots <- vapply(crossings, function(j) uniroot(moment, interval = theta_grid[c(j, j + 1L)], tol = 1e-11)$root, numeric(1))
     roots <- roots[!duplicated(round(roots, 8L))]
     if (length(roots) > 1L) warning("The nonlinear IV model has multiple solutions. The solution closest to the NLS estimate is shown.", call. = FALSE)
@@ -397,11 +460,11 @@ fit_ch_model <- function(data, dep_var, controls_vec = character(), fe_part = "0
   derivative <- cbind(ch_elasticity = terms$derivative, X)
   derivative_scale <- sqrt(colSums(derivative^2))
   Js <- sweep(derivative, 2L, derivative_scale, "/")
-  if (qr(Js, tol = 1e-10)$rank < k) stop("The CH parameter is not identified separately from the selected controls and fixed effects.")
+  if (qr(Js, tol = 1e-10)$rank < k) fail("The CH parameter is not identified separately from the selected controls and fixed effects.")
   if (method == "IV") {
     Z <- cbind(zr, Xs)
     bread <- crossprod(Z, Js)
-    if (rcond(bread) < 1e-12) stop("The nonlinear IV derivative is too weak to estimate a reliable covariance matrix.")
+    if (rcond(bread) < 1e-12) fail("The nonlinear IV derivative is too weak to estimate a reliable covariance matrix.")
     influence <- sweep((Z * residual) %*% t(solve(bread)), 2L, derivative_scale, "/")
   } else {
     bread <- crossprod(Js)
@@ -411,7 +474,7 @@ fit_ch_model <- function(data, dep_var, controls_vec = character(), fe_part = "0
   if (!is.null(cluster_col)) {
     cluster <- factor(d[[cluster_col]])
     groups <- nlevels(cluster)
-    if (groups < 2L) stop("At least two clusters are needed for clustered CH standard errors.")
+    if (groups < 2L) fail("At least two clusters are needed for clustered CH standard errors.")
     influence <- rowsum(influence, cluster, reorder = FALSE)
     correction <- if (method == "OLS") groups / (groups - 1) * (n - 1) / (n - k) else 1
     df <- if (method == "OLS") groups - 1L else Inf
@@ -429,12 +492,17 @@ fit_ch_model <- function(data, dep_var, controls_vec = character(), fe_part = "0
                  parameter_count = k, method = method, se_spec = se_spec,
                  clusters = as.integer(groups), collin.var = omitted,
                  singleton_n = singleton_n,
+                 stock_wright = stock_wright,
                  inference = if (method == "IV") "Stata gmm: asymptotic normal inference; no small-sample covariance correction." else if (is.null(cluster_col)) "Stata nl: HC1 covariance; t inference with N minus parameter count degrees of freedom." else "Stata nl: cluster covariance with finite-sample correction; t inference with clusters minus one degrees of freedom.",
                  full_coefficients = full_coef, full_covariance = full_vcov,
                  index_value = terms$value, index_derivative = terms$derivative,
                  objective = sum(residual^2), iv_moment = if (method == "IV") moment(theta) else NULL)
   class(result) <- "ch_model"
   result
+  }, error = function(error) {
+    error$stock_wright <- stock_wright
+    stop(error)
+  })
 }
 
 coef.ch_model <- function(object, ...) object$coefficients
@@ -486,7 +554,7 @@ model_coefficients <- function(details) {
     table <- app_model_table(model)
     interval <- stats::confint(model, level = .95)
     terms <- rownames(table)
-    data.frame(model = model_name, term = terms,
+    output <- data.frame(model = model_name, term = terms,
                label = vapply(terms, control_label, character(1), instrument_type = details$instrument_type, approach = details$approach),
                estimate = table[, 1], std_error = table[, 2],
                statistic = table[, 3], p_value = table[, 4],
@@ -495,6 +563,14 @@ model_coefficients <- function(details) {
                year = details$year_modern, method = model_description(details),
                density_measure = details$density_measure, approach = approach_name(details$approach),
                stringsAsFactors = FALSE, row.names = NULL)
+    if (!is.null(model$stock_wright)) {
+      output$stock_wright_lm_s <- model$stock_wright$statistic
+      output$stock_wright_p_value <- model$stock_wright$p_value
+      output$stock_wright_df <- model$stock_wright$df
+      output$stock_wright_null_elasticity <- model$stock_wright$null_elasticity
+      output$stock_wright_note <- stock_wright_text(model$stock_wright)
+    }
+    output
   })
   do.call(rbind, rows)
 }
@@ -1530,7 +1606,7 @@ server <- function(input, output, session) {
         )
       })
     }, error = function(e) {
-      list(error = paste("An error occurred during analysis:\n\n", e$message))
+      list(error = paste("An error occurred during analysis:\n\n", e$message), stock_wright = e$stock_wright)
     })
     
     analysis_output(reg_results)
@@ -1646,6 +1722,18 @@ server <- function(input, output, session) {
       }, character(1))
       parts <- c(parts, row("Instrument Wald F", fstats))
     }
+    if (is_ch && analysis_type == "IV") {
+      values <- vapply(models, function(model) {
+        diagnostic <- model$stock_wright
+        if (is.null(diagnostic) || !identical(diagnostic$status, "available")) "—" else sprintf("%.4f", diagnostic$statistic)
+      }, character(1))
+      probabilities <- vapply(models, function(model) {
+        diagnostic <- model$stock_wright
+        if (is.null(diagnostic) || !identical(diagnostic$status, "available")) return("—")
+        if (diagnostic$p_value < 0.0001) "&lt;0.0001" else sprintf("%.4f", diagnostic$p_value)
+      }, character(1))
+      parts <- c(parts, row("Stock–Wright LM S", values), row("Stock–Wright p-value", probabilities))
+    }
     if (!is.null(model_clusters) && any(!is.na(model_clusters))) {
       label <- if (se_spec == "cluster_instrument") {
         instrument_cluster_label(list(instrument_type = instrument_type, analysis_level = analysis_level, approach = approach))
@@ -1673,6 +1761,14 @@ server <- function(input, output, session) {
     }
     if (is_ch) note <- paste0(note, ' Ciccone–Hall estimates theta in log[sum(n^theta a^(1−theta))/sum(n)], using county employment n and land area a. The reported elasticity is theta − 1. BEA combined county units are kept together.')
     if (is_ch) note <- paste0(note, ' ', escape(models[[1]]$inference))
+    if (is_ch && analysis_type == "IV") {
+      note <- paste0(note, ' ', escape(help_stock_wright))
+      for (name in model_names) {
+        diagnostic <- models[[name]]$stock_wright
+        if (!is.null(diagnostic) && !identical(diagnostic$status, "available"))
+          note <- paste0(note, ' ', escape(paste0(name, ': ', stock_wright_text(diagnostic))))
+      }
+    }
     if (is_ch && analysis_level == "State") note <- paste0(note, " State estimates use all-industry GDP per job, with no schooling adjustment or state fixed effects.")
     if (is_ch && any(vapply(models, function(m) m$singleton_n > 0L, logical(1)))) note <- paste0(note, ' As in Stata, CH retains states represented by one MSA; the linear model removes these observations.')
     if (se_spec == "spatial") note <- paste0(note, ' Conley standard errors use a uniform kernel.')
@@ -1696,7 +1792,8 @@ server <- function(input, output, session) {
     
     if ("error" %in% names(analysis_output())) {
       div(class = "help-text", style = "color: #dc3545; border-left-color: #dc3545;",
-          analysis_output()$error)
+          p(analysis_output()$error),
+          if (!is.null(analysis_output()$stock_wright)) p(stock_wright_text(analysis_output()$stock_wright)))
     } else {
       details <- analysis_output()
       HTML(create_professional_table(

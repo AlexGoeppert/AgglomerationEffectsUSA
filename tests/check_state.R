@@ -67,6 +67,18 @@ for (year in years) for (construction in c('county_population', 'area_population
       as.numeric(result$data_for_fs[[paste0(prefix, 'pop_', year, suffix)]]) / 1000, check.attributes = FALSE)),
       all(result$data_for_fs[[paste0(prefix, 'valid_', year, suffix)]] == 1L))
     stopifnot(all(is.finite(coef(model))), all(is.finite(vcov(model))), nobs(model) <= 48)
+    if (method == 'IV') {
+      used <- result$data_for_fs[model$rows, ]
+      score <- (used$LHS - mean(used$LHS)) * (used$instrument - mean(used$instrument))
+      expected_s <- sum(score)^2 / sum(score^2)
+      stopifnot(model$stock_wright$status == 'available', model$stock_wright$nobs == nobs(model),
+        isTRUE(all.equal(model$stock_wright$statistic, expected_s, tolerance = 1e-10)),
+        grepl('Stock–Wright LM S', output$results_table$html, fixed = TRUE))
+      if (year == 1900 && scope == 'states_only') {
+        expected_s <- if (construction == 'area_population') 1.4868677788548883 else 1.2606478772765684
+        stopifnot(abs(model$stock_wright$statistic - expected_s) < 1e-10)
+      }
+    } else stopifnot(is.null(model$stock_wright), !grepl('Stock–Wright LM S', output$results_table$html, fixed = TRUE))
     stopifnot(grepl('Ciccone', output$results_table$html), grepl('State', output$analysis_details$html),
       output$data_notes_heading == 'State data and method')
     stopifnot(grepl('at least 95% geographic coverage', output$data_notes$html, fixed = TRUE))
@@ -83,6 +95,11 @@ for (year in years) for (construction in c('county_population', 'area_population
         grepl(app$instrument_name(construction), html, fixed = TRUE),
         !grepl('<h2>Geographic controls</h2>', html, fixed = TRUE),
         !grepl('Water-access year', html, fixed = TRUE))
+      if (method == 'IV') stopifnot(all(csv$stock_wright_df == 1L), all(csv$stock_wright_null_elasticity == 0),
+        all(abs(csv$stock_wright_lm_s - model$stock_wright$statistic) < 1e-10),
+        all(abs(csv$stock_wright_p_value - model$stock_wright$p_value) < 1e-10),
+        grepl('Stock–Wright LM S', html, fixed = TRUE))
+      else stopifnot(!'stock_wright_lm_s' %in% names(csv))
     }
     prior_header <- output$results_header
     session$setInputs(analysis_level = 'County', state_iv_year = '1790')
@@ -130,6 +147,33 @@ shiny::testServer(app$server, {
   session$flushReact()
   stopifnot(grepl('Choose a historical census year', isolate(analysis_output())$error, fixed = TRUE),
     output$results_header == 'Analysis Error', grepl('Choose a historical census year', output$results_table$html, fixed = TRUE))
+})
+local({
+  original_state <- app$state_data
+  on.exit({app$state_data <- original_state})
+  bad <- original_state
+  retained <- which(bad$year == 2010)
+  ncols <- grep('^nc[0-9]+$', names(bad), value = TRUE)
+  bad[retained, ncols] <- 0
+  bad[retained, sub('^nc', 'ac', ncols)] <- 1
+  density <- seq(1, 4, length.out = length(retained))
+  bad$nc1[retained] <- exp(density)
+  bad$LHS[retained] <- -10 * density
+  bad$RHS[retained] <- density
+  bad$ch_complete[retained] <- 1L
+  bad$AWpop_1900_s[retained] <- density * 1000
+  bad$AWvalid_1900_s[retained] <- 1L
+  app$state_data <- bad
+  shiny::testServer(app$server, {
+    session$setInputs(analysis_level = 'State', year_modern = '2010', analysis_type = 'IV',
+      state_sample_year = '1900', state_iv_year = '1900', state_instrument_type = 'area_population',
+      sample_scope = 'states_only', msa_density_measure = 'average', approach = 'density', show_map = FALSE, run_analysis = 1)
+    session$flushReact()
+    failed <- isolate(analysis_output())
+    stopifnot(!is.null(failed$error), failed$stock_wright$status == 'available',
+      grepl('Stock–Wright LM S', output$results_table$html, fixed = TRUE),
+      grepl('CH elasticity = 0', output$results_table$html, fixed = TRUE))
+  })
 })
 results <- dplyr::bind_rows(rows)
 jsonlite::write_json(results, file.path(work, 'state_app_results.json'), pretty = TRUE, digits = 15)

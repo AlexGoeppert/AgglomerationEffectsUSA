@@ -10,6 +10,10 @@ run_checked <- function(settings, exports = FALSE) {
     for (name in names(result$models)) {
       model <- result$models[[name]]
       stopifnot(nobs(model) > 0L, all(is.finite(coef(model))), all(is.finite(vcov(model))))
+      if (inherits(model, "ch_model") && result$analysis_type == "IV") {
+        stopifnot(model$stock_wright$status == "available", model$stock_wright$nobs == nobs(model),
+          grepl("Stock–Wright LM S", output$results_table$html, fixed = TRUE))
+      } else stopifnot(is.null(model$stock_wright))
       if (!inherits(model, "ch_model") && result$analysis_type == "IV") {
         stopifnot(nobs(model) == nobs(result$first_stage_models[[name]]))
         dep <- if (name == "Same Return Adj.") "LHS_adj1" else if (name == "Specific Return Adj.") "LHS_adj2" else "LHS"

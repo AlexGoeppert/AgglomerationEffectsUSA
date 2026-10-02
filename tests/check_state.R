@@ -74,18 +74,25 @@ for (year in years) for (construction in c('county_population', 'area_population
       stopifnot(model$stock_wright$status == 'available', model$stock_wright$nobs == nobs(model),
         isTRUE(all.equal(model$stock_wright$statistic, expected_s, tolerance = 1e-10)),
         grepl('Stock–Wright LM S', output$results_table$html, fixed = TRUE),
-        grepl('Wald χ² (elasticity = 0)', output$results_table$html, fixed = TRUE),
-        grepl('Wald p-value', output$results_table$html, fixed = TRUE),
-        grepl('95% Wald confidence interval', output$results_table$html, fixed = TRUE))
-      wald <- app$ch_wald_diagnostic(model)
-      stopifnot(wald$status == 'available', wald$null_elasticity == 0,
-        isTRUE(all.equal(wald$p_value, unname(app$app_model_pvalue(model)['ch_elasticity']), tolerance = 1e-10)))
+        grepl('Anderson–Rubin Wald χ²', output$results_table$html, fixed = TRUE),
+        grepl('Anderson–Rubin p-value', output$results_table$html, fixed = TRUE),
+        grepl('Local instrument Wald F', output$results_table$html, fixed = TRUE),
+        grepl('Local instrument partial R²', output$results_table$html, fixed = TRUE),
+        !grepl('Wald p-value', output$results_table$html, fixed = TRUE),
+        model$instrument_relevance$status == 'available',
+        model$anderson_rubin$status == 'available', model$anderson_rubin$nobs == nobs(model),
+        model$anderson_rubin$null_elasticity == 0, model$anderson_rubin$df == 1L,
+        model$instrument_relevance$nobs == nobs(model),
+        model$instrument_relevance$evaluated_theta == model$theta,
+        model$instrument_relevance$covariance == 'HC0')
       if (year == 1900 && scope == 'states_only') {
         expected_s <- if (construction == 'area_population') 1.4868677788548883 else 1.2606478772765684
         stopifnot(abs(model$stock_wright$statistic - expected_s) < 1e-10)
       }
-    } else stopifnot(is.null(model$stock_wright), !grepl('Stock–Wright LM S', output$results_table$html, fixed = TRUE),
-      !grepl('Wald p-value', output$results_table$html, fixed = TRUE))
+    } else stopifnot(is.null(model$stock_wright), is.null(model$anderson_rubin), is.null(model$instrument_relevance),
+      !grepl('Stock–Wright LM S', output$results_table$html, fixed = TRUE),
+      !grepl('Anderson–Rubin Wald χ²', output$results_table$html, fixed = TRUE),
+      !grepl('Local instrument Wald F', output$results_table$html, fixed = TRUE))
     stopifnot(grepl('Ciccone', output$results_table$html), grepl('State', output$analysis_details$html),
       output$data_notes_heading == 'State data and method')
     stopifnot(grepl('at least 95% geographic coverage', output$data_notes$html, fixed = TRUE))
@@ -97,12 +104,15 @@ for (year in years) for (construction in c('county_population', 'area_population
         !'water_year' %in% names(csv), !'overlap_threshold_pct' %in% names(csv))
       if (method == 'IV') {
         main <- csv[csv$term == 'ch_elasticity', ]
-        stopifnot(all(main$wald_df == 1L), all(main$wald_null_elasticity == 0),
-          all(main$wald_conf_level == .95),
-          isTRUE(all.equal(main$wald_p_value, main$p_value, tolerance = 1e-10)),
-          isTRUE(all.equal(main$wald_conf_low, main$conf_low, tolerance = 1e-10)),
-          isTRUE(all.equal(main$wald_conf_high, main$conf_high, tolerance = 1e-10)))
-      } else stopifnot(!'wald_chi_squared' %in% names(csv))
+        diagnostic <- model$instrument_relevance
+        stopifnot(nrow(main) == 1L,
+          isTRUE(all.equal(main$anderson_rubin_wald_chi_squared, model$anderson_rubin$statistic, tolerance = 1e-10)),
+          isTRUE(all.equal(main$anderson_rubin_p_value, model$anderson_rubin$p_value, tolerance = 1e-10)),
+          main$anderson_rubin_null_elasticity == 0, main$anderson_rubin_covariance == 'HC0',
+          isTRUE(all.equal(main$ch_local_instrument_wald_f, diagnostic$statistic, tolerance = 1e-10)),
+          isTRUE(all.equal(main$ch_local_partial_r2, diagnostic$partial_r2, tolerance = 1e-10)),
+          main$ch_local_covariance == 'HC0', !'wald_p_value' %in% names(csv))
+      } else stopifnot(!'ch_local_instrument_wald_f' %in% names(csv), !'anderson_rubin_p_value' %in% names(csv))
       html <- paste(readLines(output$download_results, warn = FALSE), collapse = '\n')
       stopifnot(grepl('<h2>State data</h2>', html, fixed = TRUE),
         grepl('at least 95% geographic coverage', html, fixed = TRUE),

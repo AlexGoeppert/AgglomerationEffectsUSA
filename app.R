@@ -68,10 +68,16 @@ historical_census_years <- seq(1790, 1900, 10)
 help_stock_wright <- paste("Stock–Wright LM S tests whether the CH elasticity is zero (theta = 1).",
   "Its p-value uses a chi-squared distribution with one degree of freedom and is robust to weak instruments when the model's moment assumptions hold.",
   "It tests the zero-effect hypothesis; it does not measure instrument strength.")
-help_ch_wald <- paste("Wald tests the same hypothesis: CH elasticity = 0 (theta = 1).",
-  "It squares the elasticity divided by its standard error and uses a chi-squared distribution with one degree of freedom.",
-  "The 95% Wald interval is the estimate plus or minus 1.96 standard errors, using the selected robust or clustered covariance.",
-  "Wald inference assumes sufficiently strong identification; it can be misleading with weak instruments.")
+help_anderson_rubin <- paste("Anderson–Rubin Wald tests whether the CH elasticity is zero (theta = 1).",
+  "At a proposed elasticity, the corresponding CH term is subtracted from the outcome. The remaining outcome is regressed on the historical instrument, controls and fixed effects.",
+  "The test uses the instrument coefficient and the robust or clustered covariance from this auxiliary regression, with no small-sample correction and one chi-squared degree of freedom.",
+  "It allows for weak identification under the model's moment and large-sample assumptions. It tests the proposed elasticity, not whether instruments are strong.",
+  "Unlike Stock–Wright S, its covariance comes from the auxiliary regression that includes the instrument. The two tests can differ substantially when a few observations are influential.")
+help_ch_instrument_wald <- paste("Local instrument Wald F measures instrument relevance for CH GMM.",
+  "It regresses the CH index's derivative with respect to theta, evaluated at the fitted theta, on the historical instrument and the same controls and fixed effects.",
+  "The statistic is the squared t ratio for the instrument, using the same sample and robust or clustered standard-error choice, without a small-sample correction.",
+  "Partial R-squared measures the remaining association after controls and fixed effects.",
+  "This treats the fitted derivative as fixed. It is a local relevance diagnostic, not a calibrated weak-instrument test for nonlinear GMM; a high value does not establish strong identification.")
 
 # Master settings
 help_analysis_level      <- "Pick metropolitan statistical areas (MSAs), counties, or states. State estimates use the Ciccone–Hall model and the 48 contiguous states."
@@ -80,7 +86,7 @@ help_state_ch <- paste("Ciccone and Hall (1996) relate state productivity to emp
   "The outcome is log state GDP per job for all industries. BEA combined county units are kept together. This specification uses robust standard errors and no schooling adjustment or state fixed effects.",
   "County matching sums historical populations assigned to current counties in each state. A known total reported jointly for several counties can be used when all belong to the same state. Area weighting allocates historical population by geographic overlap with current counties, assuming uniform density within each historical reporting area. The instrument is population in thousands.",
   "Only states with valid historical population and complete county employment and land area enter the model. Area-weighted state population also requires at least 95% geographic coverage. Known unallocated population makes the affected state total unavailable. The historical year can therefore change the sample.",
-  help_stock_wright, help_ch_wald, sep = "\n")
+  help_stock_wright, help_anderson_rubin, help_ch_instrument_wald, sep = "\n")
 help_year_modern         <- "Year in which modern productivity and employment are measured."
 help_approach <- paste(
   "Employment density uses log total employment per unit of area, or the Ciccone–Hall index for MSAs.",
@@ -91,7 +97,7 @@ help_analysis_type       <- paste(
   " • OLS – regress modern productivity on the employment measure selected under Approach.",
   " • IV – instrument that employment measure with the selected historical population or density measure.",
   " • First-stage regression – regress the selected modern employment measure on the historical instrument.",
-  paste("For CH IV:", help_stock_wright, help_ch_wald),
+  paste("For CH IV:", help_stock_wright, help_anderson_rubin, help_ch_instrument_wald),
   sep = "\n")
 
 # Fixed effects & scope
@@ -365,6 +371,81 @@ stock_wright_text <- function(diagnostic) {
     "; ", p_text, " (chi-squared, 1 df; N = ", diagnostic$nobs, ").")
 }
 
+auxiliary_instrument_wald <- function(response, instrument, X = NULL, cluster = NULL, design_qr = NULL) {
+  n <- length(response)
+  groups <- if (is.null(cluster)) NA_integer_ else length(unique(cluster))
+  covariance <- if (is.null(cluster)) "HC0" else "CR0"
+  unavailable <- function(reason) list(statistic = NA_real_, partial_r2 = NA_real_,
+    coefficient = NA_real_, std_error = NA_real_, nobs = n, clusters = groups,
+    covariance = covariance, status = "unavailable", reason = reason)
+  if (!n || length(instrument) != n || any(!is.finite(response)) || any(!is.finite(instrument)))
+    return(unavailable("The auxiliary outcome or instrument inputs are incomplete."))
+  if (!is.null(cluster) && (length(cluster) != n || anyNA(cluster) || groups < 2L))
+    return(unavailable("At least two complete clusters are needed."))
+  if (is.null(design_qr)) {
+    if (is.null(X)) X <- matrix(1, n, 1L)
+    X <- as.matrix(X)
+    if (nrow(X) != n || !ncol(X) || any(!is.finite(X)))
+      return(unavailable("The control or fixed-effect inputs are incomplete."))
+    scale_x <- sqrt(colSums(X^2))
+    scale_x[scale_x == 0] <- 1
+    design_qr <- qr(sweep(X, 2L, scale_x, "/"), tol = 1e-10)
+  }
+  if (n <= design_qr$rank + 1L)
+    return(unavailable("Too few observations remain after controls and fixed effects."))
+  scale_d <- max(abs(response))
+  scale_z <- max(abs(instrument))
+  if (scale_d == 0 || scale_z == 0)
+    return(unavailable("The auxiliary outcome or instrument has no variation."))
+  dn <- response / scale_d
+  zn <- instrument / scale_z
+  dr <- qr.resid(design_qr, dn)
+  zr <- qr.resid(design_qr, zn)
+  dd <- sum(dr^2)
+  zz <- sum(zr^2)
+  if (sqrt(zz) <= 1e-10 * sqrt(sum(zn^2)))
+    return(unavailable("The instrument has no variation after controls and fixed effects."))
+  if (sqrt(dd) <= 1e-10 * sqrt(sum(dn^2)))
+    return(unavailable("The auxiliary outcome has no variation after controls and fixed effects."))
+  cross <- sum(zr * dr)
+  coefficient <- cross / zz
+  score <- zr * (dr - coefficient * zr)
+  sums <- if (is.null(cluster)) score else as.numeric(rowsum(score, cluster, reorder = FALSE))
+  variance <- sum(sums^2) / zz^2
+  if (!is.finite(variance) || variance <= 0)
+    return(unavailable("The auxiliary instrument coefficient has zero or unavailable variance."))
+  list(statistic = coefficient^2 / variance, partial_r2 = min(1, max(0, cross^2 / (zz * dd))),
+    coefficient = coefficient * scale_d / scale_z, std_error = sqrt(variance) * scale_d / scale_z,
+    nobs = n, clusters = groups, covariance = covariance,
+    status = "available", reason = "")
+}
+
+ch_instrument_relevance <- function(derivative, instrument, X = NULL, cluster = NULL,
+                                    design_qr = NULL, theta = NA_real_) {
+  diagnostic <- auxiliary_instrument_wald(derivative, instrument, X, cluster, design_qr)
+  diagnostic$evaluated_theta <- theta
+  diagnostic
+}
+
+anderson_rubin_wald <- function(y_null, instrument, X = NULL, cluster = NULL,
+                                design_qr = NULL, null_elasticity = 0) {
+  diagnostic <- auxiliary_instrument_wald(y_null, instrument, X, cluster, design_qr)
+  diagnostic$p_value <- if (diagnostic$status == "available")
+    pchisq(diagnostic$statistic, df = 1L, lower.tail = FALSE) else NA_real_
+  diagnostic$df <- 1L
+  diagnostic$null_elasticity <- null_elasticity
+  diagnostic
+}
+
+anderson_rubin_text <- function(diagnostic) {
+  if (is.null(diagnostic)) return(NULL)
+  if (!identical(diagnostic$status, "available"))
+    return(paste("Anderson–Rubin Wald unavailable:", diagnostic$reason))
+  p_text <- if (diagnostic$p_value < 0.0001) "p < 0.0001" else sprintf("p = %.4f", diagnostic$p_value)
+  paste0("Anderson–Rubin Wald (H0: CH elasticity = ", diagnostic$null_elasticity, "): ",
+    sprintf("%.4f", diagnostic$statistic), "; ", p_text, " (chi-squared, 1 df; N = ", diagnostic$nobs, ").")
+}
+
 fit_ch_model <- function(data, dep_var, controls_vec = character(), fe_part = "0",
                          method = c("IV", "OLS"), se_spec = "robust",
                          n_cols = grep("^nc[0-9]+$", names(data), value = TRUE),
@@ -429,7 +510,10 @@ fit_ch_model <- function(data, dep_var, controls_vec = character(), fe_part = "0
   k <- ncol(X) + 1L
   stock_wright <- if (method == "IV") stock_wright_lm_s(y, d$instrument, design_qr = design_qr,
     cluster = if (is.null(cluster_col)) NULL else d[[cluster_col]]) else NULL
-  fail <- function(message) stop(errorCondition(message, class = "ch_fit_error", stock_wright = stock_wright))
+  anderson_rubin <- if (method == "IV") anderson_rubin_wald(y, d$instrument, design_qr = design_qr,
+    cluster = if (is.null(cluster_col)) NULL else d[[cluster_col]]) else NULL
+  fail <- function(message) stop(errorCondition(message, class = "ch_fit_error",
+    stock_wright = stock_wright, anderson_rubin = anderson_rubin))
   tryCatch({
   if (n <= k) fail("Too few observations remain for the selected CH model and fixed effects.")
   partial <- function(x) qr.resid(design_qr, x)
@@ -458,6 +542,9 @@ fit_ch_model <- function(data, dep_var, controls_vec = character(), fe_part = "0
     theta <- roots[which.min(abs(roots - theta))]
   }
   terms <- index(theta)
+  instrument_relevance <- if (method == "IV") ch_instrument_relevance(terms$derivative,
+    d$instrument, design_qr = design_qr,
+    cluster = if (is.null(cluster_col)) NULL else d[[cluster_col]], theta = theta) else NULL
   beta <- qr.coef(design_qr, y - terms$value) / scales
   fitted <- terms$value + as.vector(X %*% beta)
   residual <- y - fitted
@@ -497,6 +584,8 @@ fit_ch_model <- function(data, dep_var, controls_vec = character(), fe_part = "0
                  clusters = as.integer(groups), collin.var = omitted,
                  singleton_n = singleton_n,
                  stock_wright = stock_wright,
+                 anderson_rubin = anderson_rubin,
+                 instrument_relevance = instrument_relevance,
                  inference = if (method == "IV") "Stata gmm: asymptotic normal inference; no small-sample covariance correction." else if (is.null(cluster_col)) "Stata nl: HC1 covariance; t inference with N minus parameter count degrees of freedom." else "Stata nl: cluster covariance with finite-sample correction; t inference with clusters minus one degrees of freedom.",
                  full_coefficients = full_coef, full_covariance = full_vcov,
                  index_value = terms$value, index_derivative = terms$derivative,
@@ -505,6 +594,7 @@ fit_ch_model <- function(data, dep_var, controls_vec = character(), fe_part = "0
   result
   }, error = function(error) {
     error$stock_wright <- stock_wright
+    error$anderson_rubin <- anderson_rubin
     stop(error)
   })
 }
@@ -529,30 +619,6 @@ ch_coeftable <- function(model) {
   statistic <- estimate / se
   p <- if (is.finite(model$df.residual)) 2 * pt(abs(statistic), df = model$df.residual, lower.tail = FALSE) else 2 * pnorm(abs(statistic), lower.tail = FALSE)
   cbind(Estimate = estimate, `Std. Error` = se, `t value` = statistic, `Pr(>|t|)` = p)
-}
-
-ch_wald_diagnostic <- function(model, level = .95) {
-  if (!inherits(model, "ch_model") || !identical(model$method, "IV")) return(NULL)
-  if (length(level) != 1L || !is.finite(level) || level <= 0 || level >= 1)
-    stop("The Wald confidence level must be between zero and one.")
-  unavailable <- function(reason) list(statistic = NA_real_, p_value = NA_real_, df = 1L,
-    null_elasticity = 0, estimate = NA_real_, std_error = NA_real_, conf_low = NA_real_,
-    conf_high = NA_real_, conf_level = level, status = "unavailable", reason = reason)
-  term <- "ch_elasticity"
-  if (!term %in% names(model$coefficients) || !is.matrix(model$covariance) ||
-      !term %in% rownames(model$covariance) || !term %in% colnames(model$covariance))
-    return(unavailable("The elasticity estimate or covariance is unavailable."))
-  estimate <- unname(model$coefficients[term])
-  variance <- model$covariance[term, term]
-  if (!is.finite(estimate) || !is.finite(variance) || variance <= 0)
-    return(unavailable("The elasticity needs a finite estimate and a positive variance."))
-  se <- sqrt(variance)
-  statistic <- (estimate / se)^2
-  margin <- qnorm((1 + level) / 2) * se
-  list(statistic = statistic, p_value = pchisq(statistic, df = 1L, lower.tail = FALSE),
-    df = 1L, null_elasticity = 0, estimate = estimate, std_error = se,
-    conf_low = estimate - margin, conf_high = estimate + margin, conf_level = level,
-    status = "available", reason = "")
 }
 
 
@@ -598,16 +664,23 @@ model_coefficients <- function(details) {
       output$stock_wright_null_elasticity <- model$stock_wright$null_elasticity
       output$stock_wright_note <- stock_wright_text(model$stock_wright)
     }
-    wald <- ch_wald_diagnostic(model)
-    if (!is.null(wald)) {
-      output$wald_chi_squared <- wald$statistic
-      output$wald_p_value <- wald$p_value
-      output$wald_df <- wald$df
-      output$wald_null_elasticity <- wald$null_elasticity
-      output$wald_conf_level <- wald$conf_level
-      output$wald_conf_low <- wald$conf_low
-      output$wald_conf_high <- wald$conf_high
-      output$wald_note <- if (wald$status == "available") help_ch_wald else paste("Wald unavailable:", wald$reason)
+    if (!is.null(model$anderson_rubin)) {
+      diagnostic <- model$anderson_rubin
+      output$anderson_rubin_wald_chi_squared <- diagnostic$statistic
+      output$anderson_rubin_p_value <- diagnostic$p_value
+      output$anderson_rubin_df <- diagnostic$df
+      output$anderson_rubin_null_elasticity <- diagnostic$null_elasticity
+      output$anderson_rubin_covariance <- diagnostic$covariance
+      output$anderson_rubin_note <- anderson_rubin_text(diagnostic)
+    }
+    if (!is.null(model$instrument_relevance)) {
+      diagnostic <- model$instrument_relevance
+      output$ch_local_instrument_wald_f <- diagnostic$statistic
+      output$ch_local_partial_r2 <- diagnostic$partial_r2
+      output$ch_local_evaluated_theta <- diagnostic$evaluated_theta
+      output$ch_local_covariance <- diagnostic$covariance
+      output$ch_local_relevance_note <- if (diagnostic$status == "available")
+        help_ch_instrument_wald else paste("Local instrument Wald F unavailable:", diagnostic$reason)
     }
     output
   })
@@ -1645,7 +1718,8 @@ server <- function(input, output, session) {
         )
       })
     }, error = function(e) {
-      list(error = paste("An error occurred during analysis:\n\n", e$message), stock_wright = e$stock_wright)
+      list(error = paste("An error occurred during analysis:\n\n", e$message),
+        stock_wright = e$stock_wright, anderson_rubin = e$anderson_rubin)
     })
     
     analysis_output(reg_results)
@@ -1772,20 +1846,24 @@ server <- function(input, output, session) {
         if (diagnostic$p_value < 0.0001) "&lt;0.0001" else sprintf("%.4f", diagnostic$p_value)
       }, character(1))
       parts <- c(parts, row("Stock–Wright LM S", values), row("Stock–Wright p-value", probabilities))
-      wald <- lapply(models, ch_wald_diagnostic)
-      wald_values <- vapply(wald, function(diagnostic) {
-        if (diagnostic$status != "available") "—" else sprintf("%.4f", diagnostic$statistic)
+      ar_values <- vapply(models, function(model) {
+        diagnostic <- model$anderson_rubin
+        if (is.null(diagnostic) || diagnostic$status != "available") "—" else sprintf("%.4f", diagnostic$statistic)
       }, character(1))
-      wald_probabilities <- vapply(wald, function(diagnostic) {
-        if (diagnostic$status != "available") return("—")
+      ar_probabilities <- vapply(models, function(model) {
+        diagnostic <- model$anderson_rubin
+        if (is.null(diagnostic) || diagnostic$status != "available") return("—")
         if (diagnostic$p_value < 0.0001) "&lt;0.0001" else sprintf("%.4f", diagnostic$p_value)
       }, character(1))
-      wald_intervals <- vapply(wald, function(diagnostic) {
-        if (diagnostic$status != "available") return("—")
-        paste0("[", format_value(diagnostic$conf_low), ", ", format_value(diagnostic$conf_high), "]")
+      parts <- c(parts, row("Anderson–Rubin Wald χ²", ar_values), row("Anderson–Rubin p-value", ar_probabilities))
+      relevance <- lapply(models, function(model) model$instrument_relevance)
+      local_f <- vapply(relevance, function(diagnostic) {
+        if (is.null(diagnostic) || diagnostic$status != "available") "—" else sprintf("%.2f", diagnostic$statistic)
       }, character(1))
-      parts <- c(parts, row("Wald χ² (elasticity = 0)", wald_values),
-        row("Wald p-value", wald_probabilities), row("95% Wald confidence interval", wald_intervals))
+      partial_r2 <- vapply(relevance, function(diagnostic) {
+        if (is.null(diagnostic) || diagnostic$status != "available") "—" else sprintf("%.4f", diagnostic$partial_r2)
+      }, character(1))
+      parts <- c(parts, row("Local instrument Wald F", local_f), row("Local instrument partial R²", partial_r2))
     }
     if (!is.null(model_clusters) && any(!is.na(model_clusters))) {
       label <- if (se_spec == "cluster_instrument") {
@@ -1815,11 +1893,18 @@ server <- function(input, output, session) {
     if (is_ch) note <- paste0(note, ' Ciccone–Hall estimates theta in log[sum(n^theta a^(1−theta))/sum(n)], using county employment n and land area a. The reported elasticity is theta − 1. BEA combined county units are kept together.')
     if (is_ch) note <- paste0(note, ' ', escape(models[[1]]$inference))
     if (is_ch && analysis_type == "IV") {
-      note <- paste0(note, ' ', escape(help_stock_wright), ' ', escape(help_ch_wald))
+      note <- paste0(note, ' Stock–Wright S and Anderson–Rubin Wald test zero CH elasticity (theta = 1). Their covariance estimates differ, so influential observations can lead to different results.',
+        ' Local instrument Wald F and partial R² describe relevance for the CH derivative at fitted theta; they do not establish strong identification in nonlinear GMM.')
       for (name in model_names) {
         diagnostic <- models[[name]]$stock_wright
         if (!is.null(diagnostic) && !identical(diagnostic$status, "available"))
           note <- paste0(note, ' ', escape(paste0(name, ': ', stock_wright_text(diagnostic))))
+        ar <- models[[name]]$anderson_rubin
+        if (!is.null(ar) && ar$status != "available")
+          note <- paste0(note, ' ', escape(paste0(name, ': ', anderson_rubin_text(ar))))
+        relevance <- models[[name]]$instrument_relevance
+        if (!is.null(relevance) && relevance$status != "available")
+          note <- paste0(note, ' ', escape(paste0(name, ': Local instrument Wald F unavailable: ', relevance$reason)))
       }
     }
     if (is_ch && analysis_level == "State") note <- paste0(note, " State estimates use all-industry GDP per job, with no schooling adjustment or state fixed effects.")
@@ -1846,7 +1931,8 @@ server <- function(input, output, session) {
     if ("error" %in% names(analysis_output())) {
       div(class = "help-text", style = "color: #dc3545; border-left-color: #dc3545;",
           p(analysis_output()$error),
-          if (!is.null(analysis_output()$stock_wright)) p(stock_wright_text(analysis_output()$stock_wright)))
+          if (!is.null(analysis_output()$stock_wright)) p(stock_wright_text(analysis_output()$stock_wright)),
+          if (!is.null(analysis_output()$anderson_rubin)) p(anderson_rubin_text(analysis_output()$anderson_rubin)))
     } else {
       details <- analysis_output()
       HTML(create_professional_table(

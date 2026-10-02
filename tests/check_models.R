@@ -13,13 +13,17 @@ run_checked <- function(settings, exports = FALSE) {
       if (inherits(model, "ch_model") && result$analysis_type == "IV") {
         stopifnot(model$stock_wright$status == "available", model$stock_wright$nobs == nobs(model),
           grepl("Stock–Wright LM S", output$results_table$html, fixed = TRUE),
-          grepl("Wald χ² (elasticity = 0)", output$results_table$html, fixed = TRUE),
-          grepl("Wald p-value", output$results_table$html, fixed = TRUE),
-          grepl("95% Wald confidence interval", output$results_table$html, fixed = TRUE))
-        wald <- app$ch_wald_diagnostic(model)
-        stopifnot(wald$status == "available", wald$null_elasticity == 0,
-          isTRUE(all.equal(wald$p_value, unname(app$app_model_pvalue(model)["ch_elasticity"]), tolerance = 1e-10)))
-      } else stopifnot(is.null(model$stock_wright))
+          grepl("Anderson–Rubin Wald χ²", output$results_table$html, fixed = TRUE),
+          grepl("Anderson–Rubin p-value", output$results_table$html, fixed = TRUE),
+          grepl("Local instrument Wald F", output$results_table$html, fixed = TRUE),
+          grepl("Local instrument partial R²", output$results_table$html, fixed = TRUE),
+          !grepl("Wald p-value", output$results_table$html, fixed = TRUE),
+          model$instrument_relevance$status == "available",
+          model$anderson_rubin$status == "available", model$anderson_rubin$nobs == nobs(model),
+          model$anderson_rubin$null_elasticity == 0, model$anderson_rubin$df == 1L,
+          model$instrument_relevance$nobs == nobs(model),
+          model$instrument_relevance$evaluated_theta == model$theta)
+      } else stopifnot(is.null(model$stock_wright), is.null(model$anderson_rubin), is.null(model$instrument_relevance))
       if (!inherits(model, "ch_model") && result$analysis_type == "IV") {
         stopifnot(nobs(model) == nobs(result$first_stage_models[[name]]))
         dep <- if (name == "Same Return Adj.") "LHS_adj1" else if (name == "Specific Return Adj.") "LHS_adj2" else "LHS"
@@ -39,13 +43,21 @@ run_checked <- function(settings, exports = FALSE) {
       stopifnot(all(csv$geography == result$analysis_level), all(csv$instrument_year == result$iv_year),
         all(csv$instrument_construction == app$instrument_name(result$instrument_type, result$approach)))
       if (inherits(result$models[[1]], "ch_model") && result$analysis_type == "IV") {
-        main <- csv[csv$term == "ch_elasticity", ]
-        stopifnot(all(main$wald_df == 1L), all(main$wald_null_elasticity == 0),
-          all(main$wald_conf_level == .95),
-          isTRUE(all.equal(main$wald_p_value, main$p_value, tolerance = 1e-10)),
-          isTRUE(all.equal(main$wald_conf_low, main$conf_low, tolerance = 1e-10)),
-          isTRUE(all.equal(main$wald_conf_high, main$conf_high, tolerance = 1e-10)))
-      } else stopifnot(!"wald_chi_squared" %in% names(csv))
+        for (name in names(result$models)) {
+          main <- csv[csv$model == name & csv$term == "ch_elasticity", ]
+          diagnostic <- result$models[[name]]$instrument_relevance
+          ar <- result$models[[name]]$anderson_rubin
+          stopifnot(nrow(main) == 1L,
+            isTRUE(all.equal(main$anderson_rubin_wald_chi_squared, ar$statistic, tolerance = 1e-10)),
+            isTRUE(all.equal(main$anderson_rubin_p_value, ar$p_value, tolerance = 1e-10)),
+            main$anderson_rubin_null_elasticity == 0, main$anderson_rubin_df == 1L,
+            isTRUE(all.equal(main$ch_local_instrument_wald_f, diagnostic$statistic, tolerance = 1e-10)),
+            isTRUE(all.equal(main$ch_local_partial_r2, diagnostic$partial_r2, tolerance = 1e-10)),
+            isTRUE(all.equal(main$ch_local_evaluated_theta, diagnostic$evaluated_theta, tolerance = 1e-10)),
+            main$ch_local_covariance == diagnostic$covariance,
+            !"wald_p_value" %in% names(csv))
+        }
+      } else stopifnot(!"ch_local_instrument_wald_f" %in% names(csv), !"anderson_rubin_p_value" %in% names(csv))
       html <- paste(readLines(output$download_results, warn = FALSE), collapse = "\n")
       stopifnot(grepl('<h2>Geographic controls</h2>', html, fixed = TRUE),
         grepl(app$instrument_name(result$instrument_type, result$approach), html, fixed = TRUE))

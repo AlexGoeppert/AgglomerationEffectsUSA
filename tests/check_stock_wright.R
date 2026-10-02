@@ -1,7 +1,8 @@
 # Base-R checks run before loading the large app datasets.
 local({
   app <- new.env(parent = globalenv())
-  functions <- c("stock_wright_lm_s", "stock_wright_text", "ch_index_terms", "fit_ch_model")
+  functions <- c("stock_wright_lm_s", "stock_wright_text", "auxiliary_instrument_wald",
+    "ch_instrument_relevance", "anderson_rubin_wald", "ch_index_terms", "fit_ch_model")
   for (expr in parse("app.R")) {
     if (is.call(expr) && identical(expr[[1]], as.name("<-")) &&
         as.character(expr[[2]]) %in% functions) eval(expr, app)

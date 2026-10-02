@@ -36,6 +36,7 @@ jobs:
         run: |
           Rscript tests/check_stock_wright.R
           Rscript tests/check_wald.R
+          Rscript tests/check_anderson_rubin.R
           Rscript tests/check_data_size.R
           Rscript tests/check_models.R
           Rscript tests/check_state.R

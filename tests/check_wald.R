@@ -1,119 +1,125 @@
-# These checks need only base R and leave the app datasets untouched.
+# Local instrument relevance uses the fitted CH derivative and an auxiliary OLS fit.
 local({
-  required <- c("ch_index_terms", "stock_wright_lm_s", "fit_ch_model",
-    "coef.ch_model", "vcov.ch_model", "confint.ch_model", "ch_coeftable",
-    "ch_wald_diagnostic")
+  app <- new.env(parent = globalenv())
+  required <- c("ch_index_terms", "stock_wright_lm_s", "auxiliary_instrument_wald",
+    "ch_instrument_relevance", "anderson_rubin_wald", "fit_ch_model")
   for (expr in parse("app.R")) {
     if (is.call(expr) && identical(expr[[1]], as.name("<-")) &&
-        as.character(expr[[2]]) %in% required) eval(expr)
+        as.character(expr[[2]]) %in% required) eval(expr, app)
   }
-  stopifnot(all(vapply(required, exists, logical(1), envir = environment(), inherits = FALSE)))
+  stopifnot(all(vapply(required, exists, logical(1), envir = app, inherits = FALSE)))
   same <- function(actual, expected, tolerance = 1e-9) {
     stopifnot(isTRUE(all.equal(unname(actual), unname(expected), tolerance = tolerance)))
   }
-  fixture <- function(elasticity, se = 0.02, method = "IV") {
-    covariance <- diag(c(se^2, 0.3^2))
-    dimnames(covariance) <- list(c("ch_elasticity", "(Intercept)"),
-      c("ch_elasticity", "(Intercept)"))
-    structure(list(coefficients = c(ch_elasticity = elasticity, `(Intercept)` = 3),
-      covariance = covariance, theta = 1 + elasticity, method = method,
-      df.residual = Inf), class = "ch_model")
+  # A full OLS design and sandwich covariance provide an independent reference.
+  manual <- function(derivative, instrument, X, cluster = NULL) {
+    design <- cbind(instrument, X)
+    bread <- solve(crossprod(design))
+    coefficients <- bread %*% crossprod(design, derivative)
+    residual <- as.vector(derivative - design %*% coefficients)
+    scores <- design * residual
+    if (!is.null(cluster)) scores <- rowsum(scores, cluster, reorder = FALSE)
+    covariance <- bread %*% crossprod(scores) %*% bread
+    partial <- function(value) as.vector(value - X %*% solve(crossprod(X), crossprod(X, value)))
+    coefficient <- as.numeric(coefficients[1])
+    se <- sqrt(covariance[1, 1])
+    list(coefficient = coefficient, std_error = se, statistic = (coefficient / se)^2,
+      partial_r2 = cor(partial(derivative), partial(instrument))^2)
   }
-
-  # The restriction is theta minus one = zero, including when theta itself is one.
-  for (elasticity in c(-0.06, 0, 0.06)) {
-    model <- fixture(elasticity)
-    result <- ch_wald_diagnostic(model)
-    stopifnot(result$status == "available", result$df == 1L,
-      result$null_elasticity == 0, result$conf_level == 0.95)
-    same(result$estimate, elasticity)
-    same(result$std_error, 0.02)
-    same(result$statistic, if (elasticity == 0) 0 else 9)
-    same(result$p_value, if (elasticity == 0) 1 else 0.00269979606326019)
-    same(c(result$conf_low, result$conf_high), elasticity + c(-1, 1) * 0.0391992796908011)
-    same(result$p_value, ch_coeftable(model)["ch_elasticity", "Pr(>|t|)"])
-    same(c(result$conf_low, result$conf_high),
-      as.numeric(confint.ch_model(model, parm = "ch_elasticity")))
-    ninety <- ch_wald_diagnostic(model, level = 0.90)
-    same(c(ninety$conf_low, ninety$conf_high), elasticity + c(-1, 1) * 0.0328970725390294)
-    same(ninety$p_value, result$p_value)
-    same(ninety$statistic, result$statistic)
-    stopifnot(ninety$conf_level == 0.90)
+  compare <- function(result, reference) {
+    stopifnot(result$status == "available")
+    for (name in c("coefficient", "std_error", "statistic", "partial_r2"))
+      same(result[[name]], reference[[name]])
+    # No inferential p-value is assigned to this fitted-Jacobian diagnostic.
+    stopifnot(!"p_value" %in% names(result), !"critical_value" %in% names(result))
   }
-  stopifnot(is.null(ch_wald_diagnostic(fixture(0.06, method = "OLS"))),
-    is.null(ch_wald_diagnostic(lm(c(1, 3, 2, 5) ~ c(1, 2, 3, 4)))))
-  for (variance in c(0, -0.01, NA_real_, Inf)) {
-    model <- fixture(0.06)
-    model$covariance["ch_elasticity", "ch_elasticity"] <- variance
-    result <- ch_wald_diagnostic(model)
-    stopifnot(result$status == "unavailable", nzchar(result$reason),
-      is.na(result$statistic), is.na(result$p_value),
-      is.na(result$conf_low), is.na(result$conf_high))
-  }
-  missing_covariance <- fixture(0.06)
-  missing_covariance$covariance <- NULL
-  stopifnot(ch_wald_diagnostic(missing_covariance)$status == "unavailable")
-  for (level in list(0, 1, NA_real_, c(0.90, 0.95))) {
-    failure <- tryCatch(ch_wald_diagnostic(fixture(0.06), level = level), error = identity)
-    stopifnot(inherits(failure, "error"))
-  }
-
-  # With one county per unit, CH is linear in elasticity. Its exact IV solution
-  # and sandwich covariance can be computed directly without the CH estimator.
-  i <- seq_len(72)
-  x <- cos(i * 0.53)
-  z <- sin(i * 0.19) + i / 45
-  density <- 1 + i / 35 + 0.6 * z + 0.3 * sin(i * 0.83)
-  fe <- factor(rep(seq_len(6), each = 12))
-  cluster <- rep(seq_len(24), each = 3)
-  state <- rep(seq_len(9), each = 8)
-  data <- data.frame(
-    LHS = 3 + 0.09 * density + 0.21 * x + 0.04 * as.numeric(fe) +
-      0.05 * sin(i * 1.17) + 0.03 * cos(cluster * 0.41),
-    instrument = z, x = x, fe = fe, clusterID = cluster, state_id = state,
-    nc1 = exp(density), ac1 = 1, ch_complete = 1L)
-  data$LHS[2] <- NA_real_
-  data$instrument[5] <- NA_real_
-  data$clusterID[9] <- NA_integer_
-  data$state_id[11] <- NA_integer_
-  data$x[14] <- NA_real_
-  data$ch_complete[17] <- 0L
-
-  for (nuisance in c("intercept", "controls_and_fe")) {
-    for (se_spec in c("robust", "cluster_instrument", "cluster_state")) {
-      controls <- if (nuisance == "intercept") character() else "x"
-      fixed_effect <- if (nuisance == "intercept") "0" else "fe"
-      fit <- fit_ch_model(data, "LHS", controls_vec = controls,
-        fe_part = fixed_effect, method = "IV", se_spec = se_spec)
-      used <- data[fit$rows, , drop = FALSE]
-      X <- if (nuisance == "intercept") matrix(1, nrow(used), 1L)
-        else model.matrix(~ x + fe, used)
-      D <- cbind(log(used$nc1 / used$ac1), X)
-      Z <- cbind(used$instrument, X)
-      inverse <- solve(crossprod(Z, D))
-      coefficients <- inverse %*% crossprod(Z, used$LHS)
-      residual <- as.vector(used$LHS - D %*% coefficients)
-      scores <- Z * residual
-      if (se_spec != "robust") {
-        group <- used[[if (se_spec == "cluster_instrument") "clusterID" else "state_id"]]
-        scores <- rowsum(scores, group, reorder = FALSE)
-      }
-      covariance <- inverse %*% crossprod(scores) %*% t(inverse)
-      estimate <- as.numeric(coefficients[1])
-      std_error <- sqrt(covariance[1, 1])
-      result <- ch_wald_diagnostic(fit)
-      same(result$estimate, estimate)
-      same(result$std_error, std_error)
-      same(result$statistic, (estimate / std_error)^2)
-      same(result$p_value, 2 * pnorm(abs(estimate / std_error), lower.tail = FALSE))
-      same(c(result$conf_low, result$conf_high), estimate + c(-1, 1) * qnorm(0.975) * std_error)
-      same(result$p_value, ch_coeftable(fit)["ch_elasticity", "Pr(>|t|)"])
-      same(c(result$conf_low, result$conf_high),
-        as.numeric(confint.ch_model(fit, parm = "ch_elasticity")))
-      ols <- fit_ch_model(data, "LHS", controls_vec = controls,
-        fe_part = fixed_effect, method = "OLS", se_spec = se_spec)
-      stopifnot(is.null(ch_wald_diagnostic(ols)))
+  i <- seq_len(84)
+  x1 <- sin(i * 0.43)
+  x2 <- cos(i * 0.71)
+  fe <- factor(rep(seq_len(7), each = 12))
+  cluster <- rep(seq_len(21), each = 4)
+  z <- i / 30 + sin(i * 0.17) + 0.35 * x1
+  derivative <- 0.2 * z + 0.5 * x1 - 0.3 * x2 + as.numeric(fe) / 10 + sin(i * 1.13)
+  X <- model.matrix(~ x1 + x2 + fe)
+  for (design in list(matrix(1, length(i), 1L), cbind(1, x1, x2), X)) {
+    for (groups in list(NULL, cluster)) {
+      result <- app$ch_instrument_relevance(derivative, z, X = design, cluster = groups, theta = 1.08)
+      compare(result, manual(derivative, z, design, groups))
+      stopifnot(result$nobs == length(i), result$evaluated_theta == 1.08,
+        result$covariance == if (is.null(groups)) "HC0" else "CR0")
+      if (!is.null(groups)) stopifnot(result$clusters == length(unique(groups)))
+      qr_result <- app$ch_instrument_relevance(derivative, z,
+        design_qr = qr(design), cluster = groups, theta = 1.08)
+      compare(qr_result, result)
     }
   }
-  cat("CH Wald checks passed: theta-minus-one null, analytic p-values and intervals, robust and clustered IV covariance, controls and FE, OLS omission and unavailable variance.\n")
+  robust <- app$ch_instrument_relevance(derivative, z, X)
+  clustered <- app$ch_instrument_relevance(derivative, z, X, cluster)
+  unique_clusters <- app$ch_instrument_relevance(derivative, z, X, i)
+  compare(unique_clusters, robust)
+  for (scale in c(-1000, -0.001, 0.001, 1000)) {
+    scaled <- app$ch_instrument_relevance(derivative, z * scale, X, cluster)
+    same(scaled$statistic, clustered$statistic)
+    same(scaled$partial_r2, clustered$partial_r2)
+    same(scaled$coefficient, clustered$coefficient / scale)
+    same(scaled$std_error, clustered$std_error / abs(scale))
+    shifted <- app$ch_instrument_relevance(derivative * scale + 2 * x1 + 1,
+      z + 3 * x2 + 4, X, cluster)
+    same(shifted$statistic, clustered$statistic)
+    same(shifted$partial_r2, clustered$partial_r2)
+    same(shifted$coefficient, clustered$coefficient * scale)
+    same(shifted$std_error, clustered$std_error * abs(scale))
+  }
+  collinear <- app$ch_instrument_relevance(derivative, z, cbind(X, 2 * x1), cluster)
+  compare(collinear, clustered)
+  invalid <- list(
+    app$ch_instrument_relevance(derivative, rep(1, length(i)), X),
+    app$ch_instrument_relevance(rep(1, length(i)), z, X),
+    app$ch_instrument_relevance(derivative, z, X, rep(1, length(i))),
+    app$ch_instrument_relevance(derivative, z, X, replace(cluster, 1, NA_integer_)),
+    app$ch_instrument_relevance(replace(derivative, 1, NA_real_), z, X),
+    app$ch_instrument_relevance(derivative, replace(z, 1, Inf), X),
+    app$ch_instrument_relevance(derivative, z, diag(length(i))))
+  stopifnot(all(vapply(invalid, function(result) result$status == "unavailable" &&
+    is.na(result$statistic) && nzchar(result$reason), logical(1))))
+
+  # Check that model attachments use the fitted nonlinear derivative, exact model
+  # rows, selected controls, fixed effects and covariance grouping.
+  data <- data.frame(instrument = z, x1 = x1, fe = fe, clusterID = cluster,
+    state_id = rep(seq_len(12), each = 7), nc1 = exp(2 + i / 35 + 0.4 * z),
+    nc2 = exp(1 + i / 45 + 0.2 * cos(i * 0.23)), ac1 = 1, ac2 = 1.5,
+    ch_complete = 1L)
+  n <- as.matrix(data[c("nc1", "nc2")])
+  a <- as.matrix(data[c("ac1", "ac2")])
+  data$LHS <- 3 + app$ch_index_terms(1.12, n, a)$value + 0.2 * x1 +
+    0.03 * as.numeric(fe) + 0.015 * sin(i * 0.91)
+  data$LHS[1] <- NA_real_
+  data$instrument[2] <- NA_real_
+  data$nc1[3] <- NA_real_
+  data$x1[4] <- NA_real_
+  data$ch_complete[5] <- 0L
+  data$clusterID[6] <- NA_integer_
+  data$state_id[8] <- NA_integer_
+  for (nuisance in c("intercept", "controls_and_fe")) for (se_spec in c("robust", "cluster_instrument", "cluster_state")) {
+    controls <- if (nuisance == "intercept") character() else "x1"
+    fixed_effect <- if (nuisance == "intercept") "0" else "fe"
+    fit <- app$fit_ch_model(data, "LHS", controls_vec = controls,
+      fe_part = fixed_effect, method = "IV", se_spec = se_spec)
+    used <- data[fit$rows, , drop = FALSE]
+    design <- if (nuisance == "intercept") matrix(1, nrow(used), 1L) else model.matrix(~ x1 + fe, used)
+    groups <- if (se_spec == "robust") NULL else used[[if (se_spec == "cluster_instrument") "clusterID" else "state_id"]]
+    compare(fit$instrument_relevance, manual(fit$index_derivative, used$instrument, design, groups))
+    stopifnot(fit$instrument_relevance$nobs == fit$nobs,
+      fit$instrument_relevance$evaluated_theta == fit$theta)
+    # Direct differentiation of the CH sum verifies the derivative input.
+    n <- as.matrix(used[c("nc1", "nc2")])
+    a <- as.matrix(used[c("ac1", "ac2")])
+    weights <- n^fit$theta * a^(1 - fit$theta)
+    direct_derivative <- rowSums(weights * log(n / a)) / rowSums(weights)
+    same(fit$index_derivative, direct_derivative)
+    ols <- app$fit_ch_model(data, "LHS", controls_vec = controls,
+      fe_part = fixed_effect, method = "OLS", se_spec = se_spec)
+    stopifnot(is.null(ols$instrument_relevance))
+  }
+  cat("CH local instrument-relevance checks passed: auxiliary OLS Wald F, HC0/CR0 covariance, scale invariance, nuisance regressors, exact nonlinear CH sample and derivative, OLS omission and invalid inputs.\n")
 })

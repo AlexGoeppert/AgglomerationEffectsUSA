@@ -1,7 +1,7 @@
 # This check uses only base R, so the model and filters can also be checked offline.
 local({
   core <- new.env(parent = globalenv())
-  functions <- c("historical_census_years", "ch_index_terms", "stock_wright_lm_s",
+  functions <- c("transform_historical_instrument", "historical_census_years", "ch_index_terms", "stock_wright_lm_s",
     "auxiliary_instrument_wald", "ch_instrument_relevance", "anderson_rubin_wald", "fit_ch_model", "state_ch_result",
     "coef.ch_model", "vcov.ch_model", "nobs.ch_model", "residuals.ch_model", "fitted.ch_model", "confint.ch_model")
   for (expr in parse("app.R")) {

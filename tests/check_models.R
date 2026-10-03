@@ -10,6 +10,10 @@ run_checked <- function(settings, exports = FALSE) {
     for (name in names(result$models)) {
       model <- result$models[[name]]
       stopifnot(nobs(model) > 0L, all(is.finite(coef(model))), all(is.finite(vcov(model))))
+      if (is.finite(result$schooling_reference[[name]])) {
+        used <- result$data_for_fs[app$app_model_rows(model), , drop = FALSE]
+        stopifnot(abs(result$schooling_reference[[name]] - mean(used$avg_schooling)) < 1e-10)
+      }
       if (inherits(model, "ch_model") && result$analysis_type == "IV") {
         stopifnot(model$stock_wright$status == "available", model$stock_wright$nobs == nobs(model),
           grepl("Stock–Wright LM S", output$results_table$html, fixed = TRUE),
@@ -29,7 +33,7 @@ run_checked <- function(settings, exports = FALSE) {
         dep <- if (name == "Same Return Adj.") "LHS_adj1" else if (name == "Specific Return Adj.") "LHS_adj2" else "LHS"
         controls <- if (length(result$controls_vec)) paste("+", paste(result$controls_vec, collapse = " + ")) else ""
         formula <- as.formula(glue::glue("{dep} ~ 1 {controls} | {result$fe_part} | RHS ~ instrument"))
-        independent <- fixest::feols(formula, data = result$data_for_fs, vcov = result$vcov_arg)
+        independent <- fixest::feols(formula, data = result$data_for_fs, vcov = result$vcov_arg, fixef.rm = "singletons")
         stopifnot(isTRUE(all.equal(coef(model), coef(independent), tolerance = 1e-10)),
           isTRUE(all.equal(vcov(model), vcov(independent), tolerance = 1e-10)))
       }
@@ -58,6 +62,8 @@ run_checked <- function(settings, exports = FALSE) {
             !"wald_p_value" %in% names(csv))
         }
       } else stopifnot(!"ch_local_instrument_wald_f" %in% names(csv), !"anderson_rubin_p_value" %in% names(csv))
+      stopifnot(all(csv$instrument_units == app$instrument_units(result)),
+        all(csv$schooling_adjustment == app$schooling_adjustment_name(result$schooling_adj)))
       html <- paste(readLines(output$download_results, warn = FALSE), collapse = "\n")
       stopifnot(grepl('<h2>Geographic controls</h2>', html, fixed = TRUE),
         grepl(app$instrument_name(result$instrument_type, result$approach), html, fixed = TRUE))
@@ -97,4 +103,17 @@ for (level in c("MSA", "County")) for (method in c("OLS", "First-stage Regressio
   settings[[paste0(tolower(level), "_instrument_type")]] <- "area_population"
   run_checked(settings)
 }
+for (level in c("MSA", "County")) for (type in c("area_population", if (level == "MSA") "overlap" else "max_density_overlap")) {
+  prefix <- tolower(level)
+  settings <- list(analysis_level = level, analysis_type = "First-stage Regression", instrument_form = "log")
+  settings[[paste0(prefix, "_sample_year")]] <- "1900"
+  settings[[paste0(prefix, "_iv_year")]] <- "1900"
+  settings[[paste0(prefix, "_instrument_type")]] <- type
+  settings[[paste0(prefix, "_schooling_adj")]] <- "3"
+  result <- run_checked(settings, exports = TRUE)
+  stopifnot(result$instrument_form == "log", all(is.finite(result$data_for_fs$instrument)))
+}
+both <- run_checked(list(analysis_level = "County", analysis_type = "OLS", county_schooling_adj = "3",
+  county_sample_year = "1900", county_iv_year = "1900", county_instrument_type = "area_population"))
+stopifnot(identical(names(both$models), c("Same Return Adj.", "Specific Return Adj.")))
 cat("All model checks passed.\n")

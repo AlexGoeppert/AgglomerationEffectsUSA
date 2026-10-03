@@ -27,9 +27,19 @@ renv::restore(lockfile = "renv.lock", library = target, prompt = FALSE)
 lock <- renv::lockfile_read("renv.lock")
 if (as.character(getRversion()) != lock$R$Version)
   stop("The deployment R version differs from renv.lock.")
-actual <- vapply(names(lock$Packages), function(package)
-  as.character(packageVersion(package, lib.loc = target)), character(1))
 expected <- vapply(lock$Packages, `[[`, character(1), "Version")
+# R supplies recommended packages in its own library. Check their versions too.
+.libPaths(c(target, .Library))
+installed_version <- function(package) tryCatch(
+  as.character(packageVersion(package, lib.loc = c(target, .Library))),
+  error = function(e) NA_character_)
+actual <- vapply(names(lock$Packages), installed_version, character(1))
+different <- is.na(actual) | actual != expected
+if (any(different)) {
+  renv::install(paste0(names(expected)[different], "@", expected[different]),
+    library = target, prompt = FALSE)
+  actual <- vapply(names(lock$Packages), installed_version, character(1))
+}
 if (!identical(unname(actual), unname(expected)))
   stop("The restored package versions differ from renv.lock.")
 output <- Sys.getenv("APP_TEST_OUTPUT", unset = "/tmp/agglomeration-checks")

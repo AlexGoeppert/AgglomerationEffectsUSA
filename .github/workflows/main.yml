@@ -32,6 +32,15 @@ jobs:
           lfs: true
 
       - name: Restore locked R dependencies
+        # The lockfile controls both the package versions and the cache key.
+        uses: actions/cache@v4
+        with:
+          path: |
+            /tmp/agglomeration-r-library
+            /tmp/agglomeration-renv
+          key: r-4.5.3-linux-${{ hashFiles('renv.lock') }}
+
+      - name: Verify locked R dependencies
         run: |
           Rscript .github/scripts/restore.R
 
@@ -43,6 +52,7 @@ jobs:
           Rscript tests/check_wald.R
           Rscript tests/check_anderson_rubin.R
           Rscript tests/check_data_size.R
+          Rscript tests/check_instrument_options.R
           Rscript tests/check_models.R
           Rscript tests/check_state.R
           Rscript tests/compare_coefficients.R

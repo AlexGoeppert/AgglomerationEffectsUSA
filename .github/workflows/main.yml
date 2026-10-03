@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+      - codex/oct03-instruments-audit
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -14,6 +16,9 @@ jobs:
       
     env:
       CXXFLAGS: "-Wno-error=format-security"
+      R_LIBS_USER: /tmp/agglomeration-r-library
+      RENV_PATHS_ROOT: /tmp/agglomeration-renv
+      RENV_CONFIG_CONSENT: "TRUE"
 
     steps:
       - name: Install git and git-lfs
@@ -26,9 +31,9 @@ jobs:
         with:
           lfs: true
 
-      - name: Install R Dependencies
+      - name: Restore locked R dependencies
         run: |
-          R -e "install.packages(c('shiny', 'fixest', 'dplyr', 'haven', 'glue', 'stringr', 'shinycssloaders', 'DT', 'ggplot2', 'rsconnect', 'testthat', 'jsonlite'), repos = 'https://cloud.r-project.org')"
+          Rscript .github/scripts/restore.R
 
       - name: Check app models and compare historical instruments
         env:
@@ -53,9 +58,13 @@ jobs:
 
       - name: Create .rscignore file
         run: |
-          printf '%s\n' 'renv.lock' 'tests' '.github' > .rscignore
+          printf '%s\n' 'tests' '.github' > .rscignore
 
       - name: Deploy to shinyapps.io
+        if: github.ref == 'refs/heads/main'
+        env:
+          SHINYAPPS_TOKEN: ${{ secrets.SHINYAPPS_TOKEN }}
+          SHINYAPPS_SECRET: ${{ secrets.SHINYAPPS_SECRET }}
         run: |
-          R -e "options(repos = c(CRAN = 'https://cloud.r-project.org'), rsconnect.max.bundle.size = 5 * 1024^3); rsconnect::setAccountInfo(name = 'agoepper', token = '${{ secrets.SHINYAPPS_TOKEN }}', secret = '${{ secrets.SHINYAPPS_SECRET }}'); rsconnect::deployApp(appName = 'AgglomerationEffectsUSA', forceUpdate = TRUE, dependencyResolution = 'library')"
+          Rscript -e 'options(repos = c(CRAN = "https://cloud.r-project.org"), rsconnect.max.bundle.size = 5 * 1024^3); rsconnect::setAccountInfo(name = "agoepper", token = Sys.getenv("SHINYAPPS_TOKEN"), secret = Sys.getenv("SHINYAPPS_SECRET")); rsconnect::deployApp(appName = "AgglomerationEffectsUSA", forceUpdate = TRUE)'
 

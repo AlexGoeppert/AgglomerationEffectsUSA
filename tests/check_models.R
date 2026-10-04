@@ -1,7 +1,15 @@
 source("tests/setup.R")
 assert_ch_diagnostics_hidden <- function(html = NULL, csv = NULL) {
-  if (!is.null(html)) stopifnot(!grepl("Anderson.{0,12}Rubin|Local instrument|Local relevance", html, ignore.case = TRUE))
-  if (!is.null(csv)) stopifnot(!any(grepl("^(anderson_rubin_|ch_local_)", names(csv))))
+  if (!is.null(html)) stopifnot(!grepl("Anderson.{0,12}Rubin|Local instrument Wald F|Local instrument partial R|partial R-squared|partial R²", html, ignore.case = TRUE))
+  if (!is.null(csv)) stopifnot(!any(grepl("^anderson_rubin_|^ch_local_partial_r2$", names(csv))))
+}
+assert_f_row <- function(html, expected) {
+  row <- regmatches(html, regexec('<tr[^>]*><td[^>]*>Instrument Wald F</td>(.*?)</tr>', html, perl = TRUE))[[1]]
+  stopifnot(length(row) == 2L)
+  cells <- regmatches(row[2], gregexpr('<td[^>]*>[^<]*</td>', row[2], perl = TRUE))[[1]]
+  shown <- sub('<td[^>]*>([^<]*)</td>', '\\1', cells, perl = TRUE)
+  formatted <- ifelse(is.finite(expected), sprintf('%.2f', expected), '—')
+  stopifnot(identical(shown, unname(formatted)))
 }
 assert_ch_diagnostics_hidden(htmltools::renderTags(app$ui)$html)
 run_checked <- function(settings, exports = FALSE) {
@@ -23,6 +31,7 @@ run_checked <- function(settings, exports = FALSE) {
         stopifnot(model$stock_wright$status == "available", model$stock_wright$nobs == nobs(model),
           grepl("Stock–Wright LM S", output$results_table$html, fixed = TRUE),
           grepl("Stock–Wright p-value", output$results_table$html, fixed = TRUE),
+          grepl("Instrument Wald F", output$results_table$html, fixed = TRUE),
           !grepl("Wald p-value", output$results_table$html, fixed = TRUE),
           model$instrument_relevance$status == "available",
           model$anderson_rubin$status == "available", model$anderson_rubin$nobs == nobs(model),
@@ -31,7 +40,7 @@ run_checked <- function(settings, exports = FALSE) {
           model$instrument_relevance$evaluated_theta == model$theta)
         assert_ch_diagnostics_hidden(output$results_table$html)
       } else stopifnot(is.null(model$stock_wright), is.null(model$anderson_rubin), is.null(model$instrument_relevance))
-      if (inherits(model, "ch_model"))
+      if (inherits(model, "ch_model") && result$analysis_type == "OLS")
         stopifnot(!grepl("Instrument Wald F", output$results_table$html, fixed = TRUE))
       if (!inherits(model, "ch_model") && result$analysis_type == "IV") {
         stopifnot(nobs(model) == nobs(result$first_stage_models[[name]]))
@@ -49,20 +58,40 @@ run_checked <- function(settings, exports = FALSE) {
     assert_ch_diagnostics_hidden(csv = table)
     if (!inherits(result$models[[1]], "ch_model") && result$analysis_type %in% c("IV", "First-stage Regression"))
       stopifnot(grepl("Instrument Wald F", output$results_table$html, fixed = TRUE))
+    expected_f <- NULL
+    if (result$analysis_type %in% c("IV", "First-stage Regression")) {
+      if (inherits(result$models[[1]], "ch_model"))
+        expected_f <- vapply(result$models, function(model) model$instrument_relevance$statistic, numeric(1))
+      else {
+        first_stages <- if (result$analysis_type == "IV") result$first_stage_models else result$models
+        expected_f <- vapply(first_stages, function(model) {
+          if (!"instrument" %in% names(coef(model))) return(NA_real_)
+          variance <- vcov(model)["instrument", "instrument"]
+          if (!is.finite(variance) || variance <= 0) return(NA_real_)
+          unname(coef(model)["instrument"]^2 / variance)
+        }, numeric(1))
+      }
+      assert_f_row(output$results_table$html, expected_f)
+    }
     stopifnot(inherits(app$result_plot(result), "ggplot"))
     if (exports) {
       csv <- read.csv(output$download_coefficients)
       stopifnot(all(csv$geography == result$analysis_level), all(csv$instrument_year == result$iv_year),
         all(csv$instrument_construction == app$instrument_name(result$instrument_type, result$approach)))
       if (inherits(result$models[[1]], "ch_model") && result$analysis_type == "IV") {
-        stopifnot(all(c("stock_wright_lm_s", "stock_wright_p_value", "stock_wright_df", "stock_wright_null_elasticity") %in% names(csv)))
+        stopifnot(all(c("stock_wright_lm_s", "stock_wright_p_value", "stock_wright_df", "stock_wright_null_elasticity",
+          "ch_local_instrument_wald_f", "ch_local_evaluated_theta", "ch_local_covariance", "ch_local_relevance_note") %in% names(csv)))
         for (name in names(result$models)) {
           main <- csv[csv$model == name & csv$term == "ch_elasticity", ]
           diagnostic <- result$models[[name]]$stock_wright
+          relevance <- result$models[[name]]$instrument_relevance
           stopifnot(nrow(main) == 1L,
             isTRUE(all.equal(main$stock_wright_lm_s, diagnostic$statistic, tolerance = 1e-10)),
             isTRUE(all.equal(main$stock_wright_p_value, diagnostic$p_value, tolerance = 1e-10)),
             main$stock_wright_null_elasticity == 0, main$stock_wright_df == 1L,
+            isTRUE(all.equal(main$ch_local_instrument_wald_f, relevance$statistic, tolerance = 1e-10)),
+            isTRUE(all.equal(main$ch_local_evaluated_theta, relevance$evaluated_theta, tolerance = 1e-10)),
+            main$ch_local_covariance == relevance$covariance, nzchar(main$ch_local_relevance_note),
             !"wald_p_value" %in% names(csv))
         }
       }
@@ -73,9 +102,10 @@ run_checked <- function(settings, exports = FALSE) {
       stopifnot(grepl('<h2>Geographic controls</h2>', html, fixed = TRUE),
         grepl(app$instrument_name(result$instrument_type, result$approach), html, fixed = TRUE))
       assert_ch_diagnostics_hidden(html)
+      if (!is.null(expected_f)) assert_f_row(html, expected_f)
       if (inherits(result$models[[1]], "ch_model") && result$analysis_type == "IV")
         stopifnot(grepl("Stock–Wright LM S", html, fixed = TRUE), grepl("Stock–Wright p-value", html, fixed = TRUE),
-          !grepl("Instrument Wald F", html, fixed = TRUE))
+          grepl("Instrument Wald F", html, fixed = TRUE))
       if (!inherits(result$models[[1]], "ch_model") && result$analysis_type %in% c("IV", "First-stage Regression"))
         stopifnot(grepl("Instrument Wald F", html, fixed = TRUE))
     }

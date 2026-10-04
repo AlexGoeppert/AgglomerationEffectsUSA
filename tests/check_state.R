@@ -1,8 +1,16 @@
 source("tests/check_state_core.R")
 source("tests/setup.R")
 assert_ch_diagnostics_hidden <- function(html = NULL, csv = NULL) {
-  if (!is.null(html)) stopifnot(!grepl("Anderson.{0,12}Rubin|Local instrument|Local relevance", html, ignore.case = TRUE))
-  if (!is.null(csv)) stopifnot(!any(grepl("^(anderson_rubin_|ch_local_)", names(csv))))
+  if (!is.null(html)) stopifnot(!grepl("Anderson.{0,12}Rubin|Local instrument Wald F|Local instrument partial R|partial R-squared|partial R²", html, ignore.case = TRUE))
+  if (!is.null(csv)) stopifnot(!any(grepl("^anderson_rubin_|^ch_local_partial_r2$", names(csv))))
+}
+assert_f_row <- function(html, expected) {
+  row <- regmatches(html, regexec('<tr[^>]*><td[^>]*>Instrument Wald F</td>(.*?)</tr>', html, perl = TRUE))[[1]]
+  stopifnot(length(row) == 2L)
+  cells <- regmatches(row[2], gregexpr('<td[^>]*>[^<]*</td>', row[2], perl = TRUE))[[1]]
+  shown <- sub('<td[^>]*>([^<]*)</td>', '\\1', cells, perl = TRUE)
+  formatted <- ifelse(is.finite(expected), sprintf('%.2f', expected), '—')
+  stopifnot(identical(shown, unname(formatted)))
 }
 required <- unlist(lapply(app$historical_census_years, function(year)
   paste0(rep(c("AWpop_", "GGpop_", "AWvalid_", "GGvalid_", "HCH_", "HCHpop_", "HCHvalid_"), each = 2L), year, c("", "_s"))))
@@ -80,6 +88,7 @@ for (year in years) for (construction in c('county_population', 'area_population
         isTRUE(all.equal(model$stock_wright$statistic, expected_s, tolerance = 1e-10)),
         grepl('Stock–Wright LM S', output$results_table$html, fixed = TRUE),
         grepl('Stock–Wright p-value', output$results_table$html, fixed = TRUE),
+        grepl('Instrument Wald F', output$results_table$html, fixed = TRUE),
         !grepl('Wald p-value', output$results_table$html, fixed = TRUE),
         model$instrument_relevance$status == 'available',
         model$anderson_rubin$status == 'available', model$anderson_rubin$nobs == nobs(model),
@@ -92,7 +101,8 @@ for (year in years) for (construction in c('county_population', 'area_population
       !grepl('Anderson–Rubin Wald χ²', output$results_table$html, fixed = TRUE),
       !grepl('Local instrument Wald F', output$results_table$html, fixed = TRUE))
     assert_ch_diagnostics_hidden(output$results_table$html)
-    stopifnot(!grepl('Instrument Wald F', output$results_table$html, fixed = TRUE))
+    if (method == 'IV') assert_f_row(output$results_table$html, model$instrument_relevance$statistic)
+    if (method == 'OLS') stopifnot(!grepl('Instrument Wald F', output$results_table$html, fixed = TRUE))
     stopifnot(grepl('Ciccone', output$results_table$html), grepl('State', output$analysis_details$html),
       output$data_notes_heading == 'State data and method')
     stopifnot(grepl('at least 95% geographic coverage', output$data_notes$html, fixed = TRUE))
@@ -105,8 +115,13 @@ for (year in years) for (construction in c('county_population', 'area_population
         !'water_year' %in% names(csv), !'overlap_threshold_pct' %in% names(csv))
       if (method == 'IV') {
         main <- csv[csv$term == 'ch_elasticity', ]
+        relevance <- model$instrument_relevance
         stopifnot(nrow(main) == 1L,
-          all(c('stock_wright_lm_s', 'stock_wright_p_value', 'stock_wright_df', 'stock_wright_null_elasticity') %in% names(csv)),
+          all(c('stock_wright_lm_s', 'stock_wright_p_value', 'stock_wright_df', 'stock_wright_null_elasticity',
+            'ch_local_instrument_wald_f', 'ch_local_evaluated_theta', 'ch_local_covariance', 'ch_local_relevance_note') %in% names(csv)),
+          isTRUE(all.equal(main$ch_local_instrument_wald_f, relevance$statistic, tolerance = 1e-10)),
+          isTRUE(all.equal(main$ch_local_evaluated_theta, relevance$evaluated_theta, tolerance = 1e-10)),
+          main$ch_local_covariance == relevance$covariance, nzchar(main$ch_local_relevance_note),
           !'wald_p_value' %in% names(csv))
       }
       assert_ch_diagnostics_hidden(csv = csv)
@@ -118,11 +133,13 @@ for (year in years) for (construction in c('county_population', 'area_population
         !grepl('<h2>Geographic controls</h2>', html, fixed = TRUE),
         !grepl('Water-access year', html, fixed = TRUE))
       assert_ch_diagnostics_hidden(html)
-      stopifnot(!grepl('Instrument Wald F', html, fixed = TRUE))
+      if (method == 'IV') assert_f_row(html, model$instrument_relevance$statistic)
+      if (method == 'OLS') stopifnot(!grepl('Instrument Wald F', html, fixed = TRUE))
       if (method == 'IV') stopifnot(all(csv$stock_wright_df == 1L), all(csv$stock_wright_null_elasticity == 0),
         all(abs(csv$stock_wright_lm_s - model$stock_wright$statistic) < 1e-10),
         all(abs(csv$stock_wright_p_value - model$stock_wright$p_value) < 1e-10),
-        grepl('Stock–Wright LM S', html, fixed = TRUE), grepl('Stock–Wright p-value', html, fixed = TRUE))
+        grepl('Stock–Wright LM S', html, fixed = TRUE), grepl('Stock–Wright p-value', html, fixed = TRUE),
+        grepl('Instrument Wald F', html, fixed = TRUE))
       else stopifnot(!'stock_wright_lm_s' %in% names(csv))
     }
     prior_header <- output$results_header
@@ -215,7 +232,9 @@ local({
         all(csv$instrument_units == app$instrument_units(result)),
         all(csv$instrument_year == 1900), all(csv$sample_year == 1900),
         all(abs(csv$stock_wright_lm_s - expected_s) < 1e-9),
-        grepl('Stock–Wright LM S', output$results_table$html, fixed = TRUE))
+        all(abs(csv$ch_local_instrument_wald_f - model$instrument_relevance$statistic) < 1e-9),
+        grepl('Stock–Wright LM S', output$results_table$html, fixed = TRUE),
+        grepl('Instrument Wald F', output$results_table$html, fixed = TRUE))
     })
     model <- result$models[[1]]
     label <- paste(option$prefix, option$scale, sep = '_')

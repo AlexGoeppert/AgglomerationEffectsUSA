@@ -148,6 +148,10 @@ help_state_instrument <- paste("Glaeser and Gottlieb (2009) sums full historical
 help_stock_wright <- paste("Stock–Wright LM S tests whether the CH elasticity is zero (theta = 1).",
   "Its p-value uses a chi-squared distribution with one degree of freedom and is robust to weak instruments when the model's moment assumptions hold.",
   "It tests the zero-effect hypothesis; it does not measure instrument strength.")
+help_ch_instrument_wald <- paste("For CH GMM, Instrument Wald F describes instrument relevance at the fitted theta.",
+  "It regresses the CH index's derivative with respect to theta on the historical instrument, using the same sample, controls and fixed effects.",
+  "The statistic is the squared t ratio for the instrument, using the selected robust or clustered covariance without a small-sample correction.",
+  "It treats the fitted derivative as fixed. This is a local relevance diagnostic; usual linear-IV F cutoffs do not establish strong identification for the nonlinear CH model.")
 
 # Master settings
 help_analysis_level      <- "Pick metropolitan statistical areas (MSAs), counties, or states. State estimates use the Ciccone–Hall model and the 48 contiguous states."
@@ -159,7 +163,7 @@ help_state_ch <- paste("Ciccone and Hall (1996) relate state productivity to emp
   "County matching sums historical populations assigned to current counties in each state. A known total reported jointly for several counties can be used when all belong to the same state. Area weighting allocates historical population by geographic overlap with current counties, assuming uniform density within each historical reporting area. The Levels option uses population in thousands; the Natural log option uses ln(population).",
   "Only states with valid historical population and complete county employment and land area enter the model. Area-weighted state population also requires at least 95% geographic coverage. Known unallocated population makes the affected state total unavailable. The historical year can therefore change the sample.",
   help_state_instrument, help_instrument_form,
-  help_stock_wright, sep = "\n")
+  help_stock_wright, help_ch_instrument_wald, sep = "\n")
 help_year_modern         <- "Year in which modern productivity and employment are measured."
 help_approach <- paste(
   "Employment density uses log total employment per unit of area, or the Ciccone–Hall index for MSAs.",
@@ -170,7 +174,7 @@ help_analysis_type       <- paste(
   " • OLS – regress modern productivity on the employment measure selected under Approach.",
   " • IV – instrument that employment measure with the selected historical population or density measure.",
   " • First-stage regression – regress the selected modern employment measure on the historical instrument.",
-  paste("For CH IV:", help_stock_wright),
+  paste("For CH IV:", help_stock_wright, help_ch_instrument_wald),
   sep = "\n")
 
 # Fixed effects & scope
@@ -1043,6 +1047,14 @@ model_coefficients <- function(details) {
       output$stock_wright_df <- model$stock_wright$df
       output$stock_wright_null_elasticity <- model$stock_wright$null_elasticity
       output$stock_wright_note <- stock_wright_text(model$stock_wright)
+    }
+    if (!is.null(model$instrument_relevance)) {
+      diagnostic <- model$instrument_relevance
+      output$ch_local_instrument_wald_f <- diagnostic$statistic
+      output$ch_local_evaluated_theta <- diagnostic$evaluated_theta
+      output$ch_local_covariance <- diagnostic$covariance
+      output$ch_local_relevance_note <- if (diagnostic$status == "available")
+        help_ch_instrument_wald else paste("Instrument Wald F unavailable:", diagnostic$reason)
     }
     output
   })
@@ -2001,6 +2013,11 @@ server <- function(input, output, session) {
       parts <- c(parts, row("Instrument Wald F", fstats))
     }
     if (is_ch && analysis_type == "IV") {
+      fstats <- vapply(models, function(model) {
+        diagnostic <- model$instrument_relevance
+        if (is.null(diagnostic) || diagnostic$status != "available") "—" else sprintf("%.2f", diagnostic$statistic)
+      }, character(1))
+      parts <- c(parts, row("Instrument Wald F", fstats))
       values <- vapply(models, function(model) {
         diagnostic <- model$stock_wright
         if (is.null(diagnostic) || !identical(diagnostic$status, "available")) "—" else sprintf("%.4f", diagnostic$statistic)
@@ -2044,11 +2061,15 @@ server <- function(input, output, session) {
     if (is_ch) note <- paste0(note, ' Ciccone–Hall estimates theta in log[sum(n^theta a^(1−theta))/sum(n)], using county employment n and land area a. The reported elasticity is theta − 1. BEA combined county units are kept together.')
     if (is_ch) note <- paste0(note, ' ', escape(models[[1]]$inference))
     if (is_ch && analysis_type == "IV") {
-      note <- paste0(note, ' ', escape(help_stock_wright))
+      note <- paste0(note, ' Stock–Wright S tests zero CH elasticity (theta = 1); it does not measure instrument strength.',
+        ' Instrument Wald F describes relevance for the CH index derivative at fitted theta. It is a local diagnostic, without a calibrated weak-instrument cutoff for this nonlinear model.')
       for (name in model_names) {
         diagnostic <- models[[name]]$stock_wright
         if (!is.null(diagnostic) && !identical(diagnostic$status, "available"))
           note <- paste0(note, ' ', escape(paste0(name, ': ', stock_wright_text(diagnostic))))
+        relevance <- models[[name]]$instrument_relevance
+        if (!is.null(relevance) && relevance$status != "available")
+          note <- paste0(note, ' ', escape(paste0(name, ': Instrument Wald F unavailable: ', relevance$reason)))
       }
     }
     if (is_ch && analysis_level == "State") note <- paste0(note, " State estimates use all-industry GDP per job, with no schooling adjustment or state fixed effects.")

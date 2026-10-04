@@ -298,6 +298,8 @@ sample_exclusion_notes <- function(details) {
     "observations excluded by the mining filter because their mining share is unknown."))
   if (isTRUE(details$mining_above_n > 0L)) notes <- c(notes, paste(details$mining_above_n,
     "observations excluded because their mining share exceeds the selected threshold."))
+  if (isTRUE(details$fe_missing_n > 0L)) notes <- c(notes, paste(details$fe_missing_n,
+    "observations in the selected historical sample lack a usable identity for the selected state fixed effects and are excluded."))
   if (identical(details$analysis_level, "State") && isTRUE(details$population_missing_n > 0L))
     notes <- c(notes, paste(details$population_missing_n,
       "states have an unavailable historical instrument for the selected sample/instrument years and construction."))
@@ -321,6 +323,7 @@ sector_exclusion_outcome <- function(private_output, agriculture_output, private
 historical_sample_filter <- function(data, sample_year, scope, construction, use_fe, fe_type) {
   full <- paste0("hist_state_fe_", sample_year)
   suffix <- if (scope == "states_only") "_s" else ""
+  fe_missing_n <- 0L
   if (scope == "states_only" && !construction %in% c("county_population", "area_population")) {
     if (!full %in% names(data)) stop(paste("Historical sample-state identifiers are missing:", full))
     identity <- trimws(as.character(data[[full]]))
@@ -332,10 +335,10 @@ historical_sample_filter <- function(data, sample_year, scope, construction, use
     if (!column %in% names(data)) stop(paste("Fixed-effect identifiers are missing:", column))
     identity <- trimws(as.character(data[[column]]))
     valid <- !is.na(identity) & identity != "" & identity != "0"
-    if (any(!valid)) stop(paste("Missing fixed-effect identities for", sum(!valid),
-      "selected observations. Rebuild the state identifiers or choose a supported historical sample year."))
-    data <- data[!grepl("district|columbia|\\bdc\\b", tolower(identity)), , drop = FALSE]
+    fe_missing_n <- sum(!valid)
+    data <- data[valid & !grepl("district|columbia|\\bdc\\b", tolower(identity)), , drop = FALSE]
   }
+  attr(data, "fe_missing_n") <- fe_missing_n
   data
 }
 
@@ -1585,6 +1588,7 @@ server <- function(input, output, session) {
         if (!nrow(df) && log_nonpositive_n > 0L) stop(paste("Natural log excludes all", log_nonpositive_n, "available observations because the historical instrument is zero or negative."))
         df <- df %>% select(-.sample_iv)
         df <- historical_sample_filter(df, sample_year, sample_scope, instrument_type, use_fe, fe_type)
+        fe_missing_n <- attr(df, "fe_missing_n")
         if (mining_filter_active) {
           mining_share <- if (analysis_level == "MSA") df$gmp_mining / df$gmp else df$gcp_mining / df$gcp_total
           mining_unknown_n <- sum(!is.finite(mining_share))
@@ -1742,6 +1746,7 @@ server <- function(input, output, session) {
           instrument_type = instrument_type,
           instrument_form = instrument_form, log_nonpositive_n = log_nonpositive_n,
           sector_missing_n = sector_missing_n, mining_unknown_n = mining_unknown_n, mining_above_n = mining_above_n,
+          fe_missing_n = fe_missing_n,
           schooling_reference = schooling_reference,
           overlap_pct = if(analysis_level == "MSA") overlap_pct else overlap_threshold,
           schooling_adj = schooling_adj,

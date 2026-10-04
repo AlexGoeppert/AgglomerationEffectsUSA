@@ -39,8 +39,11 @@ local({
   expect_error(core$historical_sample_filter(scope_data[setdiff(names(scope_data), "hist_state_fe_1790")],
     1790, "states_only", "overlap", FALSE, "historical"), "identifiers are missing")
   scope_data$hist_state_fe_1900[1] <- NA
-  expect_error(core$historical_sample_filter(scope_data, 1900, "states_territories", "overlap", TRUE, "historical"),
-    "Missing fixed-effect identities")
+  scoped <- core$historical_sample_filter(scope_data, 1900, "states_territories", "overlap", TRUE, "historical")
+  stopifnot(identical(scoped$state_id, c("TN", "PA")), attr(scoped, "fe_missing_n") == 1L,
+    length(core$sample_exclusion_notes(list(fe_missing_n = attr(scoped, "fe_missing_n")))) == 1L)
+  expect_error(core$historical_sample_filter(scope_data[setdiff(names(scope_data), "hist_state_fe_1900")],
+    1900, "states_territories", "county_population", TRUE, "historical"), "identifiers are missing")
 
   # Schooling references exclude missing controls, invalid outcomes and linear FE singletons.
   sample <- data.frame(y = c(1, 2, 3, Inf, 4, 5), control = c(1, 2, NA, 3, 4, 5),

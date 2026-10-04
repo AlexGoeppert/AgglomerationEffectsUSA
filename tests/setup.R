@@ -32,3 +32,35 @@ for (level in c("MSA", "County")) {
 app$state_data <- haven::read_dta(file.path(repo, "State_CH_analysis_data.dta"))
 stopifnot(nrow(app$state_data) == 48L * 22L, !anyDuplicated(app$state_data[c("statefips", "year")]))
 original <- list(MSA = app$msa_data, County = app$county_data)
+
+# Keep the affected geographic identities available when a model check stops.
+identity_gaps <- list()
+for (level in names(original)) {
+  data <- original[[level]]
+  id <- if (level == "MSA") "msafips" else "geofips"
+  name <- if (level == "MSA") "msaname" else "geoname"
+  outcome <- if (level == "MSA") data$ln_output_worker else log(data$gcp_total / data$employment_total)
+  jobs <- if (level == "MSA") data$employment else data$employment_total
+  area <- if (level == "MSA") data$msaarea else data$area_acre
+  for (field in c("modern_state_fe", grep("^hist_state_fe_", names(data), value = TRUE))) {
+    value <- trimws(as.character(data[[field]]))
+    missing <- is.na(value) | value == "" | value == "0"
+    if (!any(missing)) next
+    year <- if (field == "modern_state_fe") NA_integer_ else as.integer(sub("^hist_state_fe_([0-9]{4}).*$", "\\1", field))
+    suffix <- if (grepl("_s$", field)) "_s" else ""
+    population <- function(prefix) {
+      if (is.na(year)) return(rep(NA_real_, nrow(data)))
+      data[[paste0(prefix, "pop_", year, suffix)]]
+    }
+    identity_gaps[[length(identity_gaps) + 1L]] <- data.frame(
+      level, unit_id = as.character(data[[id]][missing]), unit_name = as.character(data[[name]][missing]),
+      field, historical_year = year, modern_year = data$year[missing],
+      modern_outcome_available = is.finite(outcome[missing]),
+      modern_density_available = is.finite(jobs[missing]) & jobs[missing] > 0 & is.finite(area[missing]) & area[missing] > 0,
+      gg_population = population("GG")[missing], aw_population = population("AW")[missing],
+      stringsAsFactors = FALSE)
+  }
+}
+if (length(identity_gaps)) write.csv(do.call(rbind, identity_gaps),
+  file.path(work, "fixed_effect_identity_gaps.csv"), row.names = FALSE, na = "")
+rm(identity_gaps, data, outcome, jobs, area)

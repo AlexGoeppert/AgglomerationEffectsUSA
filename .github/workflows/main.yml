@@ -44,7 +44,7 @@ jobs:
 
       - name: Verify locked R dependencies
         run: |
-          Rscript .github/scripts/restore.R
+          Rscript --vanilla .github/scripts/run-locked.R .github/scripts/restore.R
 
       - name: Save verified R dependency cache
         if: steps.r-cache.outputs.cache-hit != 'true'
@@ -56,7 +56,7 @@ jobs:
           key: r-4.5.3-linux-${{ hashFiles('renv.lock') }}
 
       - name: Check strict deployment dependencies
-        run: Rscript .github/scripts/check-deployment.R
+        run: Rscript --vanilla .github/scripts/run-locked.R .github/scripts/check-deployment.R
 
       - name: Check app models and compare historical instruments
         env:
@@ -68,7 +68,7 @@ jobs:
             tests/check_instrument_options.R tests/check_models.R \
             tests/check_geography.R tests/check_state.R \
             tests/compare_coefficients.R tests/compare_instrument_years.R; do
-            if ! Rscript "$script"; then status=1; fi
+            if ! Rscript --vanilla .github/scripts/run-locked.R "$script"; then status=1; fi
           done
           exit "$status"
 
@@ -90,5 +90,5 @@ jobs:
           SHINYAPPS_TOKEN: ${{ secrets.SHINYAPPS_TOKEN }}
           SHINYAPPS_SECRET: ${{ secrets.SHINYAPPS_SECRET }}
         run: |
-          Rscript -e 'options(repos = c(CRAN = "https://cloud.r-project.org"), rsconnect.max.bundle.size = 5 * 1024^3); rsconnect::setAccountInfo(name = "agoepper", token = Sys.getenv("SHINYAPPS_TOKEN"), secret = Sys.getenv("SHINYAPPS_SECRET")); rsconnect::deployApp(appName = "AgglomerationEffectsUSA", forceUpdate = TRUE)'
+          Rscript --vanilla .github/scripts/run-locked.R -e 'options(repos = c(CRAN = "https://cloud.r-project.org"), rsconnect.max.bundle.size = 5 * 1024^3); rsconnect::setAccountInfo(name = "agoepper", token = Sys.getenv("SHINYAPPS_TOKEN"), secret = Sys.getenv("SHINYAPPS_SECRET")); rsconnect::deployApp(appName = "AgglomerationEffectsUSA", forceUpdate = TRUE)'
 

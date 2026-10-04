@@ -2,7 +2,7 @@ options(repos = c(CRAN = "https://cloud.r-project.org"))
 target <- Sys.getenv("R_LIBS_USER")
 if (!nzchar(target)) stop("R_LIBS_USER must name the isolated deployment library.")
 dir.create(target, recursive = TRUE, showWarnings = FALSE)
-.libPaths(c(target, .libPaths()))
+.libPaths(c(target, .Library), include.site = FALSE)
 
 # Bootstrap a fixed renv version, then restore every package from the lockfile.
 renv_version <- "1.2.4"
@@ -29,7 +29,7 @@ if (as.character(getRversion()) != lock$R$Version)
   stop("The deployment R version differs from renv.lock.")
 expected <- vapply(lock$Packages, `[[`, character(1), "Version")
 # R supplies recommended packages in its own library. Check their versions too.
-.libPaths(c(target, .Library))
+.libPaths(c(target, .Library), include.site = FALSE)
 installed_version <- function(package) tryCatch({
   description <- file.path(find.package(package, lib.loc = c(target, .Library)), "DESCRIPTION")
   unname(read.dcf(description, fields = "Version")[1, 1])

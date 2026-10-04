@@ -30,9 +30,10 @@ if (as.character(getRversion()) != lock$R$Version)
 expected <- vapply(lock$Packages, `[[`, character(1), "Version")
 # R supplies recommended packages in its own library. Check their versions too.
 .libPaths(c(target, .Library))
-installed_version <- function(package) tryCatch(
-  as.character(packageVersion(package, lib.loc = c(target, .Library))),
-  error = function(e) NA_character_)
+installed_version <- function(package) tryCatch({
+  description <- file.path(find.package(package, lib.loc = c(target, .Library)), "DESCRIPTION")
+  unname(read.dcf(description, fields = "Version")[1, 1])
+}, error = function(e) NA_character_)
 actual <- vapply(names(lock$Packages), installed_version, character(1))
 different <- is.na(actual) | actual != expected
 if (any(different)) {
@@ -40,11 +41,11 @@ if (any(different)) {
     library = target, prompt = FALSE)
   actual <- vapply(names(lock$Packages), installed_version, character(1))
 }
-if (!identical(unname(actual), unname(expected)))
-  stop("The restored package versions differ from renv.lock.")
 output <- Sys.getenv("APP_TEST_OUTPUT", unset = "/tmp/agglomeration-checks")
 dir.create(output, recursive = TRUE, showWarnings = FALSE)
-write.csv(data.frame(package = names(actual), version = actual),
+write.csv(data.frame(package = names(actual), version = actual, expected = expected),
   file.path(output, "package_versions.csv"), row.names = FALSE)
 writeLines(capture.output(sessionInfo()), file.path(output, "session_info.txt"))
+if (!identical(unname(actual), unname(expected)))
+  stop("The restored package versions differ from renv.lock.")
 cat("Restored and checked", length(actual), "locked packages.\n")

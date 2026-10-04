@@ -31,9 +31,10 @@ jobs:
         with:
           lfs: true
 
-      - name: Restore locked R dependencies
+      - name: Restore R dependency cache
+        id: r-cache
         # The lockfile controls both the package versions and the cache key.
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             /tmp/agglomeration-r-library
@@ -44,19 +45,28 @@ jobs:
         run: |
           Rscript .github/scripts/restore.R
 
+      - name: Save verified R dependency cache
+        if: steps.r-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            /tmp/agglomeration-r-library
+            /tmp/agglomeration-renv
+          key: r-4.5.3-linux-${{ hashFiles('renv.lock') }}
+
       - name: Check app models and compare historical instruments
         env:
           APP_TEST_OUTPUT: /tmp/agglomeration-checks
         run: |
-          Rscript tests/check_stock_wright.R
-          Rscript tests/check_wald.R
-          Rscript tests/check_anderson_rubin.R
-          Rscript tests/check_data_size.R
-          Rscript tests/check_instrument_options.R
-          Rscript tests/check_models.R
-          Rscript tests/check_state.R
-          Rscript tests/compare_coefficients.R
-          Rscript tests/compare_instrument_years.R
+          status=0
+          for script in tests/check_stock_wright.R tests/check_wald.R \
+            tests/check_anderson_rubin.R tests/check_data_size.R \
+            tests/check_instrument_options.R tests/check_models.R \
+            tests/check_geography.R tests/check_state.R \
+            tests/compare_coefficients.R tests/compare_instrument_years.R; do
+            if ! Rscript "$script"; then status=1; fi
+          done
+          exit "$status"
 
       - name: Save validation results
         if: always()

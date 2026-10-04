@@ -1,7 +1,7 @@
 source("tests/check_state_core.R")
 source("tests/setup.R")
 required <- unlist(lapply(app$historical_census_years, function(year)
-  paste0(rep(c("AWpop_", "GGpop_", "AWvalid_", "GGvalid_"), each = 2L), year, c("", "_s"))))
+  paste0(rep(c("AWpop_", "GGpop_", "AWvalid_", "GGvalid_", "HCH_", "HCHpop_", "HCHvalid_"), each = 2L), year, c("", "_s"))))
 missing <- setdiff(required, names(app$state_data))
 if (length(missing)) stop(paste("State panel is missing required historical fields:", paste(missing, collapse = ", ")))
 stopifnot(identical(sort(unique(as.integer(app$state_data$year))), 2001:2022),

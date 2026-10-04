@@ -637,11 +637,11 @@ instrument_cluster_label <- function(details) {
 
 instrument_name <- function(type, approach = "density") {
   if (identical(approach, "employment") && type %in% c("overlap", "max_density_overlap"))
-    return("Overlap (density-selected county population)")
+    return("Max Density Overlap (density-selected county population)")
   switch(type, county_population = "Glaeser and Gottlieb (2009)",
     area_population = "Area-weighted population",
     historical_ch = "Historical CH density index",
-    overlap = "Overlap", max_density_overlap = "Max Density Overlap",
+    overlap = "Max Density Overlap", max_density_overlap = "Max Density Overlap",
     weighted_density_overlap = "Weighted Density Overlap", type)
 }
 

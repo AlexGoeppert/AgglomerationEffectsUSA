@@ -1,94 +1,50 @@
-name: Deploy to shinyapps.io
+name: Read Shiny runtime logs
 
 on:
-  push:
-    branches:
-      - main
-      - codex/oct03-instruments-audit
   workflow_dispatch:
 
 jobs:
-  deploy:
+  runtime-logs:
     runs-on: ubuntu-latest
-    
     container:
       image: rocker/shiny-verse:4.5.3
-      
     env:
-      CXXFLAGS: "-Wno-error=format-security"
       R_LIBS_USER: /tmp/agglomeration-r-library
       R_LIBS_SITE: /tmp/agglomeration-r-library
       RENV_PATHS_ROOT: /tmp/agglomeration-renv
       RENV_CONFIG_CONSENT: "TRUE"
-
+      APP_TEST_OUTPUT: /tmp/shiny-runtime-diagnostic
     steps:
-      - name: Install git and git-lfs
+      - name: Install git
         run: |
           apt-get update
-          apt-get install -y git git-lfs
-
-      - name: Checkout repository
+          apt-get install -y git
+      - name: Checkout diagnostic scripts
         uses: actions/checkout@v4
         with:
-          lfs: true
-
-      - name: Restore R dependency cache
-        id: r-cache
-        # The lockfile controls both the package versions and the cache key.
+          lfs: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /.github/scripts/
+            /renv.lock
+      - name: Restore verified R library
         uses: actions/cache/restore@v4
         with:
           path: |
             /tmp/agglomeration-r-library
             /tmp/agglomeration-renv
           key: r-4.5.3-linux-${{ hashFiles('renv.lock') }}
-
-      - name: Verify locked R dependencies
-        run: |
-          Rscript --vanilla .github/scripts/run-locked.R .github/scripts/restore.R
-
-      - name: Save verified R dependency cache
-        if: steps.r-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            /tmp/agglomeration-r-library
-            /tmp/agglomeration-renv
-          key: r-4.5.3-linux-${{ hashFiles('renv.lock') }}
-
-      - name: Check strict deployment dependencies
-        run: Rscript --vanilla .github/scripts/run-locked.R .github/scripts/check-deployment.R
-
-      - name: Check app models and compare historical instruments
-        env:
-          APP_TEST_OUTPUT: /tmp/agglomeration-checks
-        run: |
-          status=0
-          for script in tests/check_stock_wright.R tests/check_wald.R \
-            tests/check_anderson_rubin.R tests/check_data_size.R \
-            tests/check_instrument_options.R tests/check_models.R \
-            tests/check_geography.R tests/check_state.R \
-            tests/compare_coefficients.R tests/compare_instrument_years.R; do
-            if ! Rscript --vanilla .github/scripts/run-locked.R "$script"; then status=1; fi
-          done
-          exit "$status"
-
-      - name: Save validation results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-validation
-          path: /tmp/agglomeration-checks
-          if-no-files-found: ignore
-
-      - name: Create .rscignore file
-        run: |
-          printf '%s\n' 'tests' '.github' > .rscignore
-
-      - name: Deploy to shinyapps.io
-        if: github.ref == 'refs/heads/main'
+      - name: Verify locked dependencies
+        run: Rscript --vanilla .github/scripts/run-locked.R .github/scripts/restore.R
+      - name: Read target app settings and runtime logs
         env:
           SHINYAPPS_TOKEN: ${{ secrets.SHINYAPPS_TOKEN }}
           SHINYAPPS_SECRET: ${{ secrets.SHINYAPPS_SECRET }}
-        run: |
-          Rscript --vanilla .github/scripts/run-locked.R -e 'options(repos = c(CRAN = "https://cloud.r-project.org"), rsconnect.max.bundle.size = 5 * 1024^3); rsconnect::setAccountInfo(name = "agoepper", token = Sys.getenv("SHINYAPPS_TOKEN"), secret = Sys.getenv("SHINYAPPS_SECRET")); rsconnect::deployApp(appName = "AgglomerationEffectsUSA", forceUpdate = TRUE)'
-
+        run: Rscript --vanilla .github/scripts/run-locked.R .github/scripts/runtime-logs.R
+      - name: Save diagnostic output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shiny-runtime-diagnostic
+          path: /tmp/shiny-runtime-diagnostic
+          if-no-files-found: ignore

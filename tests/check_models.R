@@ -1,4 +1,9 @@
 source("tests/setup.R")
+assert_ch_diagnostics_hidden <- function(html = NULL, csv = NULL) {
+  if (!is.null(html)) stopifnot(!grepl("Anderson.{0,12}Rubin|Local instrument|Local relevance", html, ignore.case = TRUE))
+  if (!is.null(csv)) stopifnot(!any(grepl("^(anderson_rubin_|ch_local_)", names(csv))))
+}
+assert_ch_diagnostics_hidden(htmltools::renderTags(app$ui)$html)
 run_checked <- function(settings, exports = FALSE) {
   result <- NULL
   shiny::testServer(app$server, {
@@ -17,17 +22,17 @@ run_checked <- function(settings, exports = FALSE) {
       if (inherits(model, "ch_model") && result$analysis_type == "IV") {
         stopifnot(model$stock_wright$status == "available", model$stock_wright$nobs == nobs(model),
           grepl("Stock–Wright LM S", output$results_table$html, fixed = TRUE),
-          grepl("Anderson–Rubin Wald χ²", output$results_table$html, fixed = TRUE),
-          grepl("Anderson–Rubin p-value", output$results_table$html, fixed = TRUE),
-          grepl("Local instrument Wald F", output$results_table$html, fixed = TRUE),
-          grepl("Local instrument partial R²", output$results_table$html, fixed = TRUE),
+          grepl("Stock–Wright p-value", output$results_table$html, fixed = TRUE),
           !grepl("Wald p-value", output$results_table$html, fixed = TRUE),
           model$instrument_relevance$status == "available",
           model$anderson_rubin$status == "available", model$anderson_rubin$nobs == nobs(model),
           model$anderson_rubin$null_elasticity == 0, model$anderson_rubin$df == 1L,
           model$instrument_relevance$nobs == nobs(model),
           model$instrument_relevance$evaluated_theta == model$theta)
+        assert_ch_diagnostics_hidden(output$results_table$html)
       } else stopifnot(is.null(model$stock_wright), is.null(model$anderson_rubin), is.null(model$instrument_relevance))
+      if (inherits(model, "ch_model"))
+        stopifnot(!grepl("Instrument Wald F", output$results_table$html, fixed = TRUE))
       if (!inherits(model, "ch_model") && result$analysis_type == "IV") {
         stopifnot(nobs(model) == nobs(result$first_stage_models[[name]]))
         dep <- if (name == "Same Return Adj.") "LHS_adj1" else if (name == "Specific Return Adj.") "LHS_adj2" else "LHS"
@@ -41,32 +46,38 @@ run_checked <- function(settings, exports = FALSE) {
     stopifnot(grepl("Observations", output$results_table$html))
     table <- app$model_coefficients(result)
     stopifnot(nrow(table) > 0L, all(is.finite(table$estimate)))
+    assert_ch_diagnostics_hidden(csv = table)
+    if (!inherits(result$models[[1]], "ch_model") && result$analysis_type %in% c("IV", "First-stage Regression"))
+      stopifnot(grepl("Instrument Wald F", output$results_table$html, fixed = TRUE))
     stopifnot(inherits(app$result_plot(result), "ggplot"))
     if (exports) {
       csv <- read.csv(output$download_coefficients)
       stopifnot(all(csv$geography == result$analysis_level), all(csv$instrument_year == result$iv_year),
         all(csv$instrument_construction == app$instrument_name(result$instrument_type, result$approach)))
       if (inherits(result$models[[1]], "ch_model") && result$analysis_type == "IV") {
+        stopifnot(all(c("stock_wright_lm_s", "stock_wright_p_value", "stock_wright_df", "stock_wright_null_elasticity") %in% names(csv)))
         for (name in names(result$models)) {
           main <- csv[csv$model == name & csv$term == "ch_elasticity", ]
-          diagnostic <- result$models[[name]]$instrument_relevance
-          ar <- result$models[[name]]$anderson_rubin
+          diagnostic <- result$models[[name]]$stock_wright
           stopifnot(nrow(main) == 1L,
-            isTRUE(all.equal(main$anderson_rubin_wald_chi_squared, ar$statistic, tolerance = 1e-10)),
-            isTRUE(all.equal(main$anderson_rubin_p_value, ar$p_value, tolerance = 1e-10)),
-            main$anderson_rubin_null_elasticity == 0, main$anderson_rubin_df == 1L,
-            isTRUE(all.equal(main$ch_local_instrument_wald_f, diagnostic$statistic, tolerance = 1e-10)),
-            isTRUE(all.equal(main$ch_local_partial_r2, diagnostic$partial_r2, tolerance = 1e-10)),
-            isTRUE(all.equal(main$ch_local_evaluated_theta, diagnostic$evaluated_theta, tolerance = 1e-10)),
-            main$ch_local_covariance == diagnostic$covariance,
+            isTRUE(all.equal(main$stock_wright_lm_s, diagnostic$statistic, tolerance = 1e-10)),
+            isTRUE(all.equal(main$stock_wright_p_value, diagnostic$p_value, tolerance = 1e-10)),
+            main$stock_wright_null_elasticity == 0, main$stock_wright_df == 1L,
             !"wald_p_value" %in% names(csv))
         }
-      } else stopifnot(!"ch_local_instrument_wald_f" %in% names(csv), !"anderson_rubin_p_value" %in% names(csv))
+      }
+      assert_ch_diagnostics_hidden(csv = csv)
       stopifnot(all(csv$instrument_units == app$instrument_units(result)),
         all(csv$schooling_adjustment == app$schooling_adjustment_name(result$schooling_adj)))
       html <- paste(readLines(output$download_results, warn = FALSE), collapse = "\n")
       stopifnot(grepl('<h2>Geographic controls</h2>', html, fixed = TRUE),
         grepl(app$instrument_name(result$instrument_type, result$approach), html, fixed = TRUE))
+      assert_ch_diagnostics_hidden(html)
+      if (inherits(result$models[[1]], "ch_model") && result$analysis_type == "IV")
+        stopifnot(grepl("Stock–Wright LM S", html, fixed = TRUE), grepl("Stock–Wright p-value", html, fixed = TRUE),
+          !grepl("Instrument Wald F", html, fixed = TRUE))
+      if (!inherits(result$models[[1]], "ch_model") && result$analysis_type %in% c("IV", "First-stage Regression"))
+        stopifnot(grepl("Instrument Wald F", html, fixed = TRUE))
     }
   })
   cat("Passed", settings$analysis_level, settings$analysis_type, settings$msa_iv_year,

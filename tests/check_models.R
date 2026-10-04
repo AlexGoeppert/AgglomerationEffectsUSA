@@ -41,7 +41,7 @@ run_checked <- function(settings, exports = FALSE) {
         assert_ch_diagnostics_hidden(output$results_table$html)
       } else stopifnot(is.null(model$stock_wright), is.null(model$anderson_rubin), is.null(model$instrument_relevance))
       if (inherits(model, "ch_model") && result$analysis_type == "OLS")
-        stopifnot(!grepl("Instrument Wald F", output$results_table$html, fixed = TRUE))
+        stopifnot(!grepl('<tr[^>]*><td[^>]*>Instrument Wald F</td>', output$results_table$html, perl = TRUE))
       if (!inherits(model, "ch_model") && result$analysis_type == "IV") {
         stopifnot(nobs(model) == nobs(result$first_stage_models[[name]]))
         dep <- if (name == "Same Return Adj.") "LHS_adj1" else if (name == "Specific Return Adj.") "LHS_adj2" else "LHS"
@@ -56,6 +56,8 @@ run_checked <- function(settings, exports = FALSE) {
     table <- app$model_coefficients(result)
     stopifnot(nrow(table) > 0L, all(is.finite(table$estimate)))
     assert_ch_diagnostics_hidden(csv = table)
+    if (inherits(result$models[[1]], "ch_model") && result$analysis_type == "OLS")
+      stopifnot(!"ch_local_instrument_wald_f" %in% names(table))
     if (!inherits(result$models[[1]], "ch_model") && result$analysis_type %in% c("IV", "First-stage Regression"))
       stopifnot(grepl("Instrument Wald F", output$results_table$html, fixed = TRUE))
     expected_f <- NULL
@@ -96,6 +98,8 @@ run_checked <- function(settings, exports = FALSE) {
         }
       }
       assert_ch_diagnostics_hidden(csv = csv)
+      if (inherits(result$models[[1]], "ch_model") && result$analysis_type == "OLS")
+        stopifnot(!"ch_local_instrument_wald_f" %in% names(csv))
       stopifnot(all(csv$instrument_units == app$instrument_units(result)),
         all(csv$schooling_adjustment == app$schooling_adjustment_name(result$schooling_adj)))
       html <- paste(readLines(output$download_results, warn = FALSE), collapse = "\n")

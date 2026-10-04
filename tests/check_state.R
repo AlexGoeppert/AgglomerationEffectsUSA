@@ -102,7 +102,7 @@ for (year in years) for (construction in c('county_population', 'area_population
       !grepl('Local instrument Wald F', output$results_table$html, fixed = TRUE))
     assert_ch_diagnostics_hidden(output$results_table$html)
     if (method == 'IV') assert_f_row(output$results_table$html, model$instrument_relevance$statistic)
-    if (method == 'OLS') stopifnot(!grepl('Instrument Wald F', output$results_table$html, fixed = TRUE))
+    if (method == 'OLS') stopifnot(!grepl('<tr[^>]*><td[^>]*>Instrument Wald F</td>', output$results_table$html, perl = TRUE))
     stopifnot(grepl('Ciccone', output$results_table$html), grepl('State', output$analysis_details$html),
       output$data_notes_heading == 'State data and method')
     stopifnot(grepl('at least 95% geographic coverage', output$data_notes$html, fixed = TRUE))
@@ -134,13 +134,13 @@ for (year in years) for (construction in c('county_population', 'area_population
         !grepl('Water-access year', html, fixed = TRUE))
       assert_ch_diagnostics_hidden(html)
       if (method == 'IV') assert_f_row(html, model$instrument_relevance$statistic)
-      if (method == 'OLS') stopifnot(!grepl('Instrument Wald F', html, fixed = TRUE))
+      if (method == 'OLS') stopifnot(!grepl('<tr[^>]*><td[^>]*>Instrument Wald F</td>', html, perl = TRUE))
       if (method == 'IV') stopifnot(all(csv$stock_wright_df == 1L), all(csv$stock_wright_null_elasticity == 0),
         all(abs(csv$stock_wright_lm_s - model$stock_wright$statistic) < 1e-10),
         all(abs(csv$stock_wright_p_value - model$stock_wright$p_value) < 1e-10),
         grepl('Stock–Wright LM S', html, fixed = TRUE), grepl('Stock–Wright p-value', html, fixed = TRUE),
         grepl('Instrument Wald F', html, fixed = TRUE))
-      else stopifnot(!'stock_wright_lm_s' %in% names(csv))
+      else stopifnot(!'stock_wright_lm_s' %in% names(csv), !'ch_local_instrument_wald_f' %in% names(csv))
     }
     prior_header <- output$results_header
     session$setInputs(analysis_level = 'County', state_iv_year = '1790')

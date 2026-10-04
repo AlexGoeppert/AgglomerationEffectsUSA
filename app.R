@@ -164,7 +164,7 @@ help_analysis_level      <- "Pick metropolitan statistical areas (MSAs), countie
 help_state_ch <- paste("Ciccone and Hall (1996) relate state productivity to employment density within the state’s counties.",
   "The model estimates theta in log[sum(n^theta a^(1−theta))/sum(n)], where n is county employment and a is county land area. The table reports theta − 1.",
   "The outcome is log state GDP per job for all industries. BEA combined county units are kept together. This specification uses robust standard errors and no schooling adjustment or state fixed effects.",
-  "There is one observation per state in the selected modern year. State fixed effects would absorb all cross-state variation, so the density effect could not be estimated. County and MSA analyses can use state fixed effects because they have multiple geographic units within states.",
+  "There is one observation per modern state in the selected year. A separate fixed effect for each modern state would absorb all variation, so the density effect could not be estimated. Historical state/territory group effects need not absorb all variation, but are not implemented in this State specification. County and MSA analyses can use state fixed effects because they have multiple geographic units within states.",
   "Sector, schooling, college-share, mining-filter and geographic-control choices belong to the County and MSA specifications. The current State specification keeps these choices fixed; this is not a general restriction on state-level models.",
   "County matching sums historical populations assigned to current counties in each state. A known total reported jointly for several counties can be used when all belong to the same state. Area weighting allocates historical population by geographic overlap with current counties, assuming uniform density within each historical reporting area. The Levels option uses population in thousands; the Natural log option uses ln(population).",
   "Only states with valid historical population and complete county employment and land area enter the model. Area-weighted state population also requires at least 95% geographic coverage. Known unallocated population makes the affected state total unavailable. The historical year can therefore change the sample.",
@@ -184,7 +184,7 @@ help_analysis_type       <- paste(
   sep = "\n")
 
 # Fixed effects & scope
-help_use_fe              <- "State fixed effects account for factors shared by geographic units in the same state. They remain available for County and MSA analyses, including MSA Ciccone–Hall. A State-level cross section has one observation per state, so state fixed effects would absorb all variation and prevent estimation of the density effect."
+help_use_fe              <- "State fixed effects account for factors shared by geographic units in the same state. Historical and modern effects remain available for County and MSA analyses, including MSA Ciccone–Hall. With one observation per modern state, separate modern-state effects would absorb all variation. Historical state/territory group effects are not implemented in the State specification."
 help_fe_type             <- "Modern uses modern state identities. Historical uses state and territory identities in the selected historical sample year, so changing only the instrument year leaves the fixed-effect definition unchanged."
 help_sample_scope        <- paste(
   "Which modern places stay in the sample?",
@@ -1342,7 +1342,7 @@ ui <- fluidPage(title = "Agglomeration Effects USA",
                  
                  conditionalPanel("input.analysis_level == 'State'",
                    h4("4. State Settings"),
-                   p(class = "help-block", "There is one observation per state. State fixed effects would absorb all cross-state variation, so they are unavailable here. This State specification uses all industries and robust standard errors, without schooling adjustments, mining filters or geographic controls. County and MSA settings are retained when you return to those levels."),
+                   p(class = "help-block", "There is one observation per modern state, so a separate fixed effect for each modern state would absorb all variation. Historical state/territory group effects are not implemented in this State specification. It uses all industries and robust standard errors, without schooling adjustments, mining filters or geographic controls. County and MSA settings are retained when you return to those levels."),
                    labeledInput("state_model", "Ciccone–Hall model:",
                      p(class = "help-block", "All-industry state GDP per job and county employment density. Robust standard errors."),
                      "help_state_ch", help_state_ch),

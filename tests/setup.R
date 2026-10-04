@@ -9,6 +9,8 @@ for (expr in parse("app.R")) {
 }
 for (generic in c("coef", "vcov", "nobs", "residuals", "fitted", "confint"))
   registerS3method(generic, "ch_model", app[[paste0(generic, ".ch_model")]], envir = asNamespace("stats"))
+# Fixed numerical comparison specifications, including the original unadjusted
+# County specification. Live interface defaults are checked in check_interface.R.
 defaults <- list(analysis_level="MSA", year_modern="2010", analysis_type="IV", use_fe=TRUE,
   fe_type="historical", sample_scope="states_only", approach="density", instrument_form="levels", msa_density_measure="average",
   msa_sectors="1", msa_sample_year="1790", msa_iv_year="1840", msa_instrument_type="overlap",

@@ -53,8 +53,8 @@ check_runtime <- function() {
       msa_schooling_adj = "3", msa_apply_college_adj = TRUE, msa_college_coeff = "0.75",
       msa_se_spec = "cluster_instrument", msa_mining_filter_active = FALSE, msa_mining_threshold = "0.01", msa_spatial_cutoff = "100",
       county_sectors = "1", county_sample_year = "1790", county_iv_year = "1840", county_instrument_type = "max_density_overlap",
-      county_overlap_threshold = "5", county_controls = character(), county_schooling_adj = "0",
-      county_apply_college_adj = FALSE, county_college_coeff = "0.75", county_se_spec = "cluster_instrument",
+      county_overlap_threshold = "5", county_controls = c("water_1820", "railroads_1840"), county_schooling_adj = "3",
+      county_apply_college_adj = TRUE, county_college_coeff = "0.75", county_se_spec = "cluster_instrument",
       county_mining_filter_active = FALSE, county_mining_threshold = "0.01", county_spatial_cutoff = "100",
       county_msa_restriction = FALSE, geo_controls = character(), water_controls = character(), water_year = "1820",
       map_size = 75, show_map = TRUE)

@@ -77,7 +77,7 @@ jobs:
           APP_TEST_OUTPUT: /tmp/agglomeration-checks
         run: |
           status=0
-          for script in tests/check_stock_wright.R tests/check_wald.R \
+          for script in tests/check_interface.R tests/check_stock_wright.R tests/check_wald.R \
             tests/check_anderson_rubin.R tests/check_data_size.R \
             tests/check_instrument_options.R tests/check_models.R \
             tests/check_geography.R tests/check_state.R \

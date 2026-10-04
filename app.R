@@ -164,6 +164,8 @@ help_analysis_level      <- "Pick metropolitan statistical areas (MSAs), countie
 help_state_ch <- paste("Ciccone and Hall (1996) relate state productivity to employment density within the state’s counties.",
   "The model estimates theta in log[sum(n^theta a^(1−theta))/sum(n)], where n is county employment and a is county land area. The table reports theta − 1.",
   "The outcome is log state GDP per job for all industries. BEA combined county units are kept together. This specification uses robust standard errors and no schooling adjustment or state fixed effects.",
+  "There is one observation per state in the selected modern year. State fixed effects would absorb all cross-state variation, so the density effect could not be estimated. County and MSA analyses can use state fixed effects because they have multiple geographic units within states.",
+  "Sector, schooling, college-share, mining-filter and geographic-control choices belong to the County and MSA specifications. The current State specification keeps these choices fixed; this is not a general restriction on state-level models.",
   "County matching sums historical populations assigned to current counties in each state. A known total reported jointly for several counties can be used when all belong to the same state. Area weighting allocates historical population by geographic overlap with current counties, assuming uniform density within each historical reporting area. The Levels option uses population in thousands; the Natural log option uses ln(population).",
   "Only states with valid historical population and complete county employment and land area enter the model. Area-weighted state population also requires at least 95% geographic coverage. Known unallocated population makes the affected state total unavailable. The historical year can therefore change the sample.",
   help_state_instrument, help_instrument_form,
@@ -182,7 +184,7 @@ help_analysis_type       <- paste(
   sep = "\n")
 
 # Fixed effects & scope
-help_use_fe              <- "State fixed effects to eliminate state level factors affecting modern productivity."
+help_use_fe              <- "State fixed effects account for factors shared by geographic units in the same state. They remain available for County and MSA analyses, including MSA Ciccone–Hall. A State-level cross section has one observation per state, so state fixed effects would absorb all variation and prevent estimation of the density effect."
 help_fe_type             <- "Modern uses modern state identities. Historical uses state and territory identities in the selected historical sample year, so changing only the instrument year leaves the fixed-effect definition unchanged."
 help_sample_scope        <- paste(
   "Which modern places stay in the sample?",
@@ -287,6 +289,189 @@ labeledInput <- function(inputId, labelText, inputUI, helpId, helpText) {
       div(class = "help-text", helpText)
     )
   )
+}
+
+geography_settings_defaults <- function() {
+  list(sectors = "1", sample_year = "1790", iv_year = "1840", overlap = "5",
+    schooling_adj = "3", apply_college_adj = TRUE, college_coeff = "0.75",
+    mining_filter_active = FALSE, mining_threshold = "0.01", se_spec = "cluster_instrument",
+    spatial_cutoff = "100", controls = c("water_1820", "railroads_1840"))
+}
+
+geography_instrument_choices <- function(level, approach = "density") {
+  choices <- c("Max Density Overlap" = if (level == "MSA") "overlap" else "max_density_overlap")
+  if (level == "County" && !identical(approach, "employment"))
+    choices <- c(choices, "Weighted Density Overlap" = "weighted_density_overlap")
+  c(choices, "Glaeser and Gottlieb (2009)" = "county_population", "Area-weighted population" = "area_population")
+}
+
+geography_standard_errors <- function(level, instrument, ch = FALSE) {
+  choices <- c("Cluster on Instrument" = "cluster_instrument", "Cluster on State" = "cluster_state",
+    "Spatial (Conley)" = "spatial", "Robust" = "robust")
+  if (any(instrument %in% c("county_population", "area_population"))) names(choices)[1] <- paste("Cluster on", level)
+  else if (any(instrument %in% c("overlap", "max_density_overlap"))) names(choices)[1] <- "Cluster on Historical County"
+  if (ch) choices <- choices[choices != "spatial"]
+  choices
+}
+
+geography_settings_ui <- function(level) {
+  prefix <- tolower(level)
+  id <- function(name) paste0(prefix, "_", name)
+  defaults <- geography_settings_defaults()
+  field <- function(name, label, widget, help) labeledInput(id(name), label, widget, paste0("help_", id(name)), help)
+  checkbox <- function(name, label, help) tagList(
+    div(class = "input-button-row", style = "margin-bottom:15px;",
+      checkboxInput(id(name), label, value = defaults[[name]]),
+      actionButton(paste0("help_", id(name)), NULL, icon = icon("question-circle"), class = "help-btn")),
+    conditionalPanel(paste0("input.help_", id(name), " % 2 == 1"), div(class = "help-text", help)))
+  overlap_id <- id(if (level == "MSA") "overlap_pct" else "overlap_threshold")
+  overlap_condition <- if (level == "MSA") "input.msa_instrument_type == 'overlap'" else
+    "input.county_instrument_type == 'max_density_overlap' || input.county_instrument_type == 'weighted_density_overlap'"
+  density_choices <- c("Average employment density" = "average")
+  if (level == "MSA") density_choices <- c(density_choices, "Ciccone–Hall index" = "CH")
+  tagList(
+    h4("4. Geographic Unit Settings"),
+    conditionalPanel("input.approach != 'employment'",
+      selectInput(id("density_measure"), "Density measure:", density_choices, "average"),
+      if (level == "County") p(class = "help-block", "With one county per observation, the Ciccone–Hall model reduces to the regression using log county employment density.")),
+    if (level == "MSA") conditionalPanel("input.approach != 'employment' && input.msa_density_measure == 'CH'",
+      p(class = "help-block", "Uses employment density within each MSA's counties. OLS uses nonlinear least squares; IV uses GMM. State fixed effects and controls remain available. A separate first-stage regression and Conley standard errors are not implemented for this model.")),
+    field("sectors", "Sector:", selectInput(id("sectors"), NULL,
+      c("All" = 1, "Private" = 2, "Manufacturing" = 3, "Private non-farm" = 4, "Private non-farm/mining" = 5), defaults$sectors), help_sectors),
+    field("sample_year", "Year of the Historical Territory:", selectInput(id("sample_year"), NULL, historical_census_years, defaults$sample_year), help_sample_year),
+    field("iv_year", textOutput(id("iv_year_label"), inline = TRUE), selectInput(id("iv_year"), NULL, historical_census_years, defaults$iv_year), help_iv_year),
+    field("instrument_type", "Match of Historical to Modern Geographic Units:",
+      selectInput(id("instrument_type"), NULL, geography_instrument_choices(level), if (level == "MSA") "overlap" else "max_density_overlap"),
+      if (level == "MSA") help_msa_instrument_type else help_county_instrument_type),
+    if (level == "MSA") p(class = "help-block", "Weighted density overlap is available at County level."),
+    conditionalPanel(overlap_condition,
+      labeledInput(overlap_id, "Minimum Overlap (%):", selectInput(overlap_id, NULL, c(5,10,20,30,40,50,60,70,80,90), defaults$overlap),
+        paste0("help_", overlap_id), if (level == "MSA") help_msa_overlap_pct else help_county_overlap_threshold),
+      p(class = "help-block", if (level == "MSA") "Percentage of the historical county's area overlapping the modern MSA."
+        else "Percentage of the modern county's area overlapping the historical county.")),
+    field("schooling_adj", "Modern Adjustment for Human Capital", selectInput(id("schooling_adj"), NULL,
+      c("None" = 0, "Same Return" = 1, "Specific Return" = 2, "Run Both" = 3), defaults$schooling_adj), help_schooling_adj),
+    checkbox("apply_college_adj", "Apply College Share Adjustment", help_apply_college_adj),
+    field("college_coeff", "College Share Coefficient:", textInput(id("college_coeff"), NULL, defaults$college_coeff, placeholder = "0.75"), help_college_coeff),
+    checkbox("mining_filter_active", "Filter by Mining Share", help_mining_filter_active),
+    field("mining_threshold", "Max Mining Share:", textInput(id("mining_threshold"), NULL, defaults$mining_threshold, placeholder = "0.01"), help_mining_threshold),
+    field("se_spec", "Standard Errors:", selectInput(id("se_spec"), NULL,
+      geography_standard_errors(level, if (level == "MSA") "overlap" else "max_density_overlap"), defaults$se_spec), help_se_spec),
+    conditionalPanel(paste0("input.", id("se_spec"), " == 'spatial'"),
+      field("spatial_cutoff", "Spatial Cutoff (km):", textInput(id("spatial_cutoff"), NULL, defaults$spatial_cutoff, placeholder = "100"), help_spatial_cutoff)),
+    if (level == "County") tagList(
+      div(class = "input-button-row", style = "margin-bottom:15px;",
+        checkboxInput("county_msa_restriction", "Restrict to counties in an MSA", value = FALSE),
+        actionButton("help_county_msa_restriction", NULL, icon = icon("question-circle"), class = "help-btn")),
+      conditionalPanel("input.help_county_msa_restriction % 2 == 1", div(class = "help-text", help_county_msa_restriction)))
+  )
+}
+
+geography_transport_ui <- function(level) {
+  id <- paste0(tolower(level), "_controls")
+  labeledInput(id, "Historical Transport:", checkboxGroupInput(id, NULL,
+    c("Water Access Sum 1820" = "water_1820", "Railroads 1840" = "railroads_1840", "Railroads 1850" = "railroads_1850", "Railroads 1861" = "railroads_1861"),
+    geography_settings_defaults()$controls), paste0("help_", id), help_controls)
+}
+
+geography_switch_plan <- function(from, to, values) {
+  plan <- list(updates = list(), messages = character())
+  if (length(from) != 1L || length(to) != 1L || !from %in% c("MSA", "County") || !to %in% c("MSA", "County") || identical(from, to)) return(plan)
+  source <- paste0(tolower(from), "_")
+  destination <- paste0(tolower(to), "_")
+  shared <- c("sectors", "sample_year", "iv_year", "schooling_adj", "apply_college_adj", "college_coeff",
+    "mining_filter_active", "mining_threshold", "se_spec", "spatial_cutoff", "controls")
+  for (name in shared) if (paste0(source, name) %in% names(values)) {
+    value <- values[[paste0(source, name)]]
+    if (name == "controls" && is.null(value)) value <- character()
+    if (!is.null(value)) plan$updates[[paste0(destination, name)]] <- value
+  }
+  source_overlap <- paste0(source, if (from == "MSA") "overlap_pct" else "overlap_threshold")
+  if (!is.null(values[[source_overlap]]))
+    plan$updates[[paste0(destination, if (to == "MSA") "overlap_pct" else "overlap_threshold")]] <- values[[source_overlap]]
+  method <- values[[paste0(source, "instrument_type")]]
+  if (identical(method, "weighted_density_overlap") && to == "MSA") {
+    retained <- values[["msa_instrument_type"]]
+    choices <- geography_instrument_choices("MSA")
+    label <- names(choices)[match(retained, choices)]
+    if (!length(label) || is.na(label)) label <- "its selected matching method"
+    plan$messages <- c(plan$messages, paste("Weighted density overlap is available only for County. MSA keeps", paste0(label, "."), "Review the matching method before running."))
+  } else if (length(method) == 1L) {
+    if (method %in% c("overlap", "max_density_overlap")) method <- if (to == "MSA") "overlap" else "max_density_overlap"
+    if (method %in% geography_instrument_choices(to, values$approach)) plan$updates[[paste0(destination, "instrument_type")]] <- method
+  }
+  msa_ch <- !identical(values$approach, "employment") && identical(values$msa_density_measure, "CH")
+  if (to == "MSA" && msa_ch && identical(plan$updates$msa_se_spec, "spatial")) {
+    plan$updates$msa_se_spec <- "robust"
+    plan$messages <- c(plan$messages, "MSA retains its Ciccone–Hall model. Conley standard errors are not implemented for this model; Robust is selected.")
+  }
+  if (to == "County" && msa_ch)
+    plan$messages <- c(plan$messages, "County uses average employment density. With one county per observation, the Ciccone–Hall model reduces to the log density regression.")
+  plan
+}
+
+observe_geography_settings <- function(input, session) {
+  last_method_level <- reactiveVal(NULL)
+  saved_nonstate_method <- reactiveVal(NULL)
+  observeEvent(input$approach, {
+    choices <- geography_instrument_choices("County", input$approach)
+    selected <- isolate(input$county_instrument_type)
+    if (is.null(selected) || !selected %in% choices) {
+      if (identical(selected, "weighted_density_overlap"))
+        showNotification("Weighted density overlap is available for Employment density only. Max Density Overlap is selected for Employment.", duration = 10, session = session)
+      selected <- "max_density_overlap"
+    }
+    updateSelectInput(session, "county_instrument_type", choices = choices, selected = selected)
+  }, ignoreInit = TRUE)
+  observeEvent(list(input$msa_density_measure, input$analysis_level, input$msa_instrument_type, input$county_instrument_type, input$approach), {
+    msa_ch <- !identical(input$approach, "employment") && identical(input$msa_density_measure, "CH")
+    active_ch <- identical(input$analysis_level, "State") || (identical(input$analysis_level, "MSA") && msa_ch)
+    methods <- if (active_ch) c("IV", "OLS") else c("IV", "OLS", "First-stage Regression")
+    selected <- isolate(input$analysis_type)
+    previous_level <- isolate(last_method_level())
+    if (identical(input$analysis_level, "State") && any(previous_level %in% c("MSA", "County")))
+      saved_nonstate_method(selected)
+    if (!identical(input$analysis_level, "State") && identical(previous_level, "State")) {
+      previous_method <- isolate(saved_nonstate_method())
+      if (length(previous_method) == 1L && previous_method %in% methods) selected <- previous_method
+      saved_nonstate_method(NULL)
+    }
+    last_method_level(input$analysis_level)
+    if (is.null(selected) || !selected %in% methods) {
+      if (!is.null(selected)) showNotification("The Ciccone–Hall model offers IV (GMM) and OLS (nonlinear least squares). IV is selected.", duration = 10, session = session)
+      selected <- "IV"
+    }
+    updateSelectInput(session, "analysis_type", choices = methods, selected = selected)
+    for (level in c("MSA", "County")) {
+      prefix <- paste0(tolower(level), "_")
+      choices <- geography_standard_errors(level, input[[paste0(prefix, "instrument_type")]], level == "MSA" && msa_ch)
+      selected_se <- isolate(input[[paste0(prefix, "se_spec")]])
+      if (is.null(selected_se) || !selected_se %in% choices) {
+        if (identical(selected_se, "spatial") && level == "MSA" && msa_ch) {
+          selected_se <- "robust"
+          showNotification("Conley standard errors are not implemented for MSA Ciccone–Hall. Robust is selected.", duration = 10, session = session)
+        } else selected_se <- "cluster_instrument"
+      }
+      updateSelectInput(session, paste0(prefix, "se_spec"), choices = choices, selected = selected_se)
+    }
+  }, ignoreInit = FALSE)
+  previous <- reactiveVal(NULL)
+  observeEvent(input$analysis_level, {
+    level <- input$analysis_level
+    if (!level %in% c("MSA", "County")) return()
+    from <- previous()
+    previous(level)
+    if (is.null(from)) return()
+    plan <- geography_switch_plan(from, level, isolate(reactiveValuesToList(input)))
+    for (id in names(plan$updates)) {
+      value <- plan$updates[[id]]
+      if (grepl("_(apply_college_adj|mining_filter_active)$", id)) updateCheckboxInput(session, id, value = value)
+      else if (grepl("_controls$", id)) updateCheckboxGroupInput(session, id, selected = value)
+      else if (grepl("_(college_coeff|mining_threshold|spatial_cutoff)$", id)) updateTextInput(session, id, value = value)
+      else updateSelectInput(session, id, selected = value)
+    }
+    for (message in plan$messages) showNotification(message, duration = 12, session = session)
+  }, ignoreInit = FALSE, priority = -10)
 }
 
 # ============================================================================
@@ -1157,6 +1342,7 @@ ui <- fluidPage(title = "Agglomeration Effects USA",
                  
                  conditionalPanel("input.analysis_level == 'State'",
                    h4("4. State Settings"),
+                   p(class = "help-block", "There is one observation per state. State fixed effects would absorb all cross-state variation, so they are unavailable here. This State specification uses all industries and robust standard errors, without schooling adjustments, mining filters or geographic controls. County and MSA settings are retained when you return to those levels."),
                    labeledInput("state_model", "Ciccone–Hall model:",
                      p(class = "help-block", "All-industry state GDP per job and county employment density. Robust standard errors."),
                      "help_state_ch", help_state_ch),
@@ -1171,120 +1357,15 @@ ui <- fluidPage(title = "Agglomeration Effects USA",
                        c("Glaeser and Gottlieb (2009)" = "county_population", "Area-weighted population" = "area_population", "Historical CH density index" = "historical_ch"), "area_population"),
                      "help_state_instrument_type", help_state_instrument)
                  ),
-                 # ── MSA‑specific panels ────────────────────────────────
-                 conditionalPanel(
-                   condition = "input.analysis_level == 'MSA'",
-                   h4("4. MSA Specific Settings"),
-                   conditionalPanel("input.approach != 'employment'",
-                     selectInput("msa_density_measure", "Density measure:",
-                       c("MSA average density" = "average", "Ciccone–Hall index" = "CH"), "average")),
-                   conditionalPanel("input.approach != 'employment' && input.msa_density_measure == 'CH'",
-                     p(class = "help-block", "Uses employment density within each MSA's county units. OLS runs nonlinear least squares; IV runs nonlinear GMM.")),
-                   labeledInput("msa_sectors", "Sector:",
-                                selectInput("msa_sectors", NULL, c("All"=1, "Private"=2, "Manufacturing"=3, "Private non-farm"=4, "Private non-farm/mining"=5), 1),
-                                "help_msa_sectors", help_sectors),
-                   labeledInput("msa_sample_year", "Year of the Historical Territory:",
-                                selectInput("msa_sample_year", NULL, historical_census_years, 1790),
-                                "help_msa_sample_year", help_sample_year),
-                   labeledInput("msa_iv_year", textOutput("msa_iv_year_label", inline = TRUE),
-                                selectInput("msa_iv_year", NULL, historical_census_years, 1840),
-                                "help_msa_iv_year", help_iv_year),
-                   labeledInput("msa_instrument_type", "Match of Historical to Modern Geographic Units:",
-                                selectInput("msa_instrument_type", NULL,
-                                  c("overlap" = "overlap", "Glaeser and Gottlieb (2009)" = "county_population", "Area-weighted population" = "area_population"), "overlap"),
-                                "help_msa_instrument_type", help_msa_instrument_type),
-                   conditionalPanel("input.msa_instrument_type == 'overlap'",
-                   labeledInput("msa_overlap_pct", "Overlap %:",
-                                selectInput("msa_overlap_pct", NULL, c(5,10,20,30,40,50,60,70,80,90), 5),
-                                "help_msa_overlap_pct", help_msa_overlap_pct)),
-                   labeledInput("msa_schooling_adj", "Modern Adjustment for Human Capital",
-                                selectInput("msa_schooling_adj", NULL, c("None"=0, "Same Return"=1, "Specific Return"=2, "Run Both"=3), 3),
-                                "help_msa_schooling_adj", help_schooling_adj),
-                   div(class="input-button-row", style="margin-bottom:15px;",
-                       checkboxInput("msa_apply_college_adj", "Apply College Share Adjustment", value = TRUE),
-                       actionButton("help_msa_apply_college_adj", NULL, icon=icon("question-circle"), class="help-btn")),
-                   conditionalPanel("input.help_msa_apply_college_adj % 2 == 1", div(class="help-text", help_apply_college_adj)),
-                   labeledInput("msa_college_coeff", "College Share Coefficient:",
-                                textInput("msa_college_coeff", NULL, "0.75", placeholder = "0.75"),
-                                "help_msa_college_coeff", help_college_coeff),
-                   div(class="input-button-row", style="margin-bottom:15px;",
-                       checkboxInput("msa_mining_filter_active", "Filter by Mining Share", value = FALSE),
-                       actionButton("help_msa_mining_filter_active", NULL, icon=icon("question-circle"), class="help-btn")),
-                   conditionalPanel("input.help_msa_mining_filter_active % 2 == 1", div(class="help-text", help_mining_filter_active)),
-                   labeledInput("msa_mining_threshold", "Max Mining Share:",
-                                textInput("msa_mining_threshold", NULL, "0.01", placeholder = "0.01"),
-                                "help_msa_mining_threshold", help_mining_threshold),
-                   labeledInput("msa_se_spec", "Standard Errors:",
-                                selectInput("msa_se_spec", NULL, c("Cluster on Instrument"="cluster_instrument", "Cluster on State"="cluster_state", "Spatial (Conley)"="spatial", "Robust"="robust"), "cluster_instrument"),
-                                "help_msa_se_spec", help_se_spec),
-                   conditionalPanel("input.msa_se_spec == 'spatial'",
-                                    labeledInput("msa_spatial_cutoff", "Spatial Cutoff (km):",
-                                                 textInput("msa_spatial_cutoff", NULL, "100", placeholder = "100"),
-                                                 "help_msa_spatial_cutoff", help_spatial_cutoff))
-                 ),
-                 
-                 # ── County‑specific panels ─────────────────────────────
-                 conditionalPanel(
-                   condition = "input.analysis_level == 'County'",
-                   h4("4. County Specific Settings"),
-                   labeledInput("county_sectors", "Sector:",
-                                selectInput("county_sectors", NULL, c("All"=1, "Private"=2, "Manufacturing"=3, "Private non-farm"=4, "Private non-farm/mining"=5), 1),
-                                "help_county_sectors", help_sectors),
-                   div(class="input-button-row", style="margin-bottom:15px;",
-                       checkboxInput("county_msa_restriction", "Restrict to counties in an MSA", value = FALSE),
-                       actionButton("help_county_msa_restriction", NULL, icon=icon("question-circle"), class="help-btn")),
-                   conditionalPanel("input.help_county_msa_restriction % 2 == 1", div(class="help-text", help_county_msa_restriction)),
-                   labeledInput("county_sample_year", "Year of the Historical Territory:",
-                                selectInput("county_sample_year", NULL, historical_census_years, 1790),
-                                "help_county_sample_year", help_sample_year),
-                   labeledInput("county_iv_year", textOutput("county_iv_year_label", inline = TRUE),
-                                selectInput("county_iv_year", NULL, historical_census_years, 1840),
-                                "help_county_iv_year", help_iv_year),
-                   labeledInput("county_instrument_type", "Match of Historical to Modern Geographic Units:",
-                                selectInput("county_instrument_type", NULL, c("Max Density Overlap"="max_density_overlap", "Weighted Density Overlap"="weighted_density_overlap", "Glaeser and Gottlieb (2009)"="county_population", "Area-weighted population"="area_population"), "max_density_overlap"),
-                                "help_county_instrument_type", help_county_instrument_type),
-                   conditionalPanel("input.county_instrument_type == 'max_density_overlap' || input.county_instrument_type == 'weighted_density_overlap'",
-                   labeledInput("county_overlap_threshold", "Overlap Threshold %:",
-                                selectInput("county_overlap_threshold", NULL, c(5,10,20,30,40,50,60,70,80,90), 5),
-                                "help_county_overlap_threshold", help_county_overlap_threshold)),
-                   labeledInput("county_schooling_adj", "Modern Adjustment for Human Capital",
-                                selectInput("county_schooling_adj", NULL, c("None"=0, "Same Return"=1, "Specific Return"=2, "Run Both"=3), 0),
-                                "help_county_schooling_adj", help_schooling_adj),
-                   div(class="input-button-row", style="margin-bottom:15px;",
-                       checkboxInput("county_apply_college_adj", "Apply College Share Adjustment", value = FALSE),
-                       actionButton("help_county_apply_college_adj", NULL, icon=icon("question-circle"), class="help-btn")),
-                   conditionalPanel("input.help_county_apply_college_adj % 2 == 1", div(class="help-text", help_apply_college_adj)),
-                   labeledInput("county_college_coeff", "College Share Coefficient:",
-                                textInput("county_college_coeff", NULL, "0.75", placeholder = "0.75"),
-                                "help_county_college_coeff", help_college_coeff),
-                   div(class="input-button-row", style="margin-bottom:15px;",
-                       checkboxInput("county_mining_filter_active", "Filter by Mining Share", value = FALSE),
-                       actionButton("help_county_mining_filter_active", NULL, icon=icon("question-circle"), class="help-btn")),
-                   conditionalPanel("input.help_county_mining_filter_active % 2 == 1", div(class="help-text", help_mining_filter_active)),
-                   labeledInput("county_mining_threshold", "Max Mining Share:",
-                                textInput("county_mining_threshold", NULL, "0.01", placeholder = "0.01"),
-                                "help_county_mining_threshold", help_mining_threshold),
-                   labeledInput("county_se_spec", "Standard Errors:",
-                                selectInput("county_se_spec", NULL, c("Cluster on Instrument"="cluster_instrument", "Cluster on State"="cluster_state", "Spatial (Conley)"="spatial", "Robust"="robust"), "cluster_instrument"),
-                                "help_county_se_spec", help_se_spec),
-                   conditionalPanel("input.county_se_spec == 'spatial'",
-                                    labeledInput("county_spatial_cutoff", "Spatial Cutoff (km):",
-                                                 textInput("county_spatial_cutoff", NULL, "100", placeholder = "100"),
-                                                 "help_county_spatial_cutoff", help_spatial_cutoff))
-                 ),
+                 conditionalPanel("input.analysis_level == 'MSA'", geography_settings_ui("MSA")),
+                 conditionalPanel("input.analysis_level == 'County'", geography_settings_ui("County")),
                  hr(),
                  conditionalPanel("input.analysis_level != 'State'",
                  div(id = "geographic_controls_panel",
                    h4("Geographic Controls"),
                    p(class = "geo-control-note", "Control for physical geography and historical transport. Each box adds one or more separate variables to the regression. Use (?) for definitions and units."),
-                   conditionalPanel("input.analysis_level == 'MSA'",
-                     labeledInput("msa_controls", "Historical Transport:",
-                       checkboxGroupInput("msa_controls", NULL, c("Water Access Sum 1820"="water_1820", "Railroads 1840"="railroads_1840", "Railroads 1850"="railroads_1850", "Railroads 1861"="railroads_1861"), c("water_1820", "railroads_1840")),
-                       "help_msa_controls", help_controls)),
-                   conditionalPanel("input.analysis_level == 'County'",
-                     labeledInput("county_controls", "Historical Transport:",
-                       checkboxGroupInput("county_controls", NULL, c("Water Access Sum 1820"="water_1820", "Railroads 1840"="railroads_1840", "Railroads 1850"="railroads_1850", "Railroads 1861"="railroads_1861")),
-                       "help_county_controls", help_controls)),
+                   conditionalPanel("input.analysis_level == 'MSA'", geography_transport_ui("MSA")),
+                   conditionalPanel("input.analysis_level == 'County'", geography_transport_ui("County")),
                    labeledInput("geo_controls", "Terrain, Crop Suitability and Climate:",
                      checkboxGroupInput("geo_controls", NULL,
                        c("Ruggedness and Elevation" = "terrain", "Wheat and Maize Suitability" = "crop", "Temperature and Precipitation" = "climate"), selected = character()),
@@ -1423,35 +1504,7 @@ server <- function(input, output, session) {
     else "Year of the Historical Population Density (Historical Census Year):"
   })
 
-  observeEvent(input$approach, {
-    choices <- c("Max Density Overlap" = "max_density_overlap", "Weighted Density Overlap" = "weighted_density_overlap", "Glaeser and Gottlieb (2009)" = "county_population", "Area-weighted population" = "area_population")
-    if (identical(input$approach, "employment")) choices <- choices[choices != "weighted_density_overlap"]
-    selected <- isolate(input$county_instrument_type)
-    if (is.null(selected) || !selected %in% choices) selected <- "max_density_overlap"
-    updateSelectInput(session, "county_instrument_type", choices = choices, selected = selected)
-  }, ignoreInit = TRUE)
-
-  observeEvent(list(input$msa_density_measure, input$analysis_level, input$msa_instrument_type, input$county_instrument_type, input$approach), {
-    ch <- identical(input$analysis_level, "State") || (!identical(input$approach, "employment") && identical(input$analysis_level, "MSA") && identical(input$msa_density_measure, "CH"))
-    methods <- if (ch) c("IV", "OLS") else c("IV", "OLS", "First-stage Regression")
-    selected <- isolate(input$analysis_type)
-    if (is.null(selected) || !selected %in% methods) selected <- "IV"
-    updateSelectInput(session, "analysis_type", choices = methods, selected = selected)
-    standard_errors <- c("Cluster on Instrument" = "cluster_instrument",
-      "Cluster on State" = "cluster_state", "Spatial (Conley)" = "spatial", "Robust" = "robust")
-    if (is_aggregated_population(list(instrument_type = input$msa_instrument_type))) names(standard_errors)[1] <- "Cluster on MSA"
-    else if (identical(input$msa_instrument_type, "overlap")) names(standard_errors)[1] <- "Cluster on Historical County"
-    if (ch) standard_errors <- standard_errors[standard_errors != "spatial"]
-    selected_se <- isolate(input$msa_se_spec)
-    if (is.null(selected_se) || !selected_se %in% standard_errors) selected_se <- "cluster_instrument"
-    updateSelectInput(session, "msa_se_spec", choices = standard_errors, selected = selected_se)
-    county_errors <- c("Cluster on Instrument" = "cluster_instrument", "Cluster on State" = "cluster_state", "Spatial (Conley)" = "spatial", "Robust" = "robust")
-    if (is_aggregated_population(list(instrument_type = input$county_instrument_type))) names(county_errors)[1] <- "Cluster on County"
-    else if (identical(input$county_instrument_type, "max_density_overlap")) names(county_errors)[1] <- "Cluster on Historical County"
-    county_se <- isolate(input$county_se_spec)
-    if (is.null(county_se) || !county_se %in% county_errors) county_se <- "cluster_instrument"
-    updateSelectInput(session, "county_se_spec", choices = county_errors, selected = county_se)
-  }, ignoreInit = TRUE)
+  observe_geography_settings(input, session)
 
   estimated_sample <- function(model, details = analysis_output()) {
     details$data_for_fs[app_model_rows(model), , drop = FALSE]

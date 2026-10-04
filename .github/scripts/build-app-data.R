@@ -21,14 +21,16 @@ for (level in c(spec$levels, "State")) {
   cat("Preparing app data:", level, "\n")
   data <- if (level == "State") haven::read_dta(spec$sources[[level]]) else
     loader$read_app_data(spec$sources[[level]], level)
-  if (anyNA(data$year) || !all(data$year %in% spec$years) ||
-      !identical(sort(unique(as.integer(data$year))), spec$years))
+  available_years <- data$year[!is.na(data$year)]
+  if ((level == "State" && anyNA(data$year)) || !all(available_years %in% spec$years) ||
+      !identical(sort(unique(as.integer(available_years))), spec$years))
     stop(paste(level, "must contain exactly the modern years 2001 through 2022."))
+  if (anyNA(data$year)) cat("Rows without a modern year remain outside the app sample:", sum(is.na(data$year)), "\n")
   manifest$columns[[level]] <- names(data)
   years <- if (level == "State") NA_integer_ else spec$years
   for (year in years) {
     filename <- if (level == "State") "state.rds" else paste0(level, "-", year, ".rds")
-    part <- if (level == "State") data else data[data$year == year, , drop = FALSE]
+    part <- if (level == "State") data else data[data$year %in% year, , drop = FALSE]
     saveRDS(part, file.path(cache_dir, filename), compress = "gzip", version = 3)
     restored <- readRDS(file.path(cache_dir, filename))
     # This includes column labels, classes, missing values, row order and precision.

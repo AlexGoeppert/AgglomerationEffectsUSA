@@ -35,10 +35,83 @@ read_app_data <- function(path, level) {
   haven::read_dta(path, col_select = tidyselect::all_of(selected))
 }
 
+app_data_spec <- function() {
+  years <- 2001:2022
+  list(version = 1L, years = years, levels = c("MSA", "County"),
+    sources = c(MSA = "MSA_analysis_data.dta", County = "master_county_build.dta", State = "State_CH_analysis_data.dta"),
+    files = c(paste0("MSA-", years, ".rds"), paste0("County-", years, ".rds"), "state.rds"))
+}
+
+read_app_cache_manifest <- function(cache_dir) {
+  spec <- app_data_spec()
+  manifest_path <- file.path(cache_dir, "manifest.rds")
+  if (!file.exists(manifest_path)) stop("The app data cache is incomplete: manifest.rds is missing. Rebuild the cache before deployment.")
+  manifest <- readRDS(manifest_path)
+  if (!is.list(manifest) || !identical(manifest$version, spec$version) ||
+      !identical(manifest$years, spec$years) || !identical(manifest$files, spec$files) ||
+      !identical(names(manifest$rows), spec$files) || anyNA(manifest$rows) || any(manifest$rows < 1) ||
+      !identical(names(manifest$columns), c(spec$levels, "State")) ||
+      any(vapply(manifest$columns, function(x) !is.character(x) || !"year" %in% x || anyDuplicated(x) > 0L, logical(1))))
+    stop("The app data cache has an invalid manifest. Rebuild the cache before deployment.")
+  paths <- file.path(cache_dir, spec$files)
+  missing <- spec$files[!file.exists(paths)]
+  if (length(missing)) stop(paste("The app data cache is incomplete; missing:", paste(missing, collapse = ", ")))
+  if (!identical(names(manifest$bytes), spec$files) || anyNA(manifest$bytes) ||
+      any(unname(manifest$bytes) != file.info(paths)$size))
+    stop("The app data cache contains an incomplete or changed file. Rebuild the cache before deployment.")
+  manifest
+}
+
+make_app_data_loader <- function(cache_dir = "app-data", source_dir = ".") {
+  spec <- app_data_spec()
+  manifest <- if (dir.exists(cache_dir)) read_app_cache_manifest(cache_dir) else NULL
+  cache <- new.env(parent = emptyenv())
+  read_cached <- function(filename, level) {
+    data <- readRDS(file.path(cache_dir, filename))
+    if (!is.data.frame(data) || !identical(names(data), manifest$columns[[level]]) ||
+        nrow(data) != manifest$rows[[filename]])
+      stop(paste("Invalid app data cache file:", filename))
+    data
+  }
+  get_year <- function(level, year) {
+    if (length(level) != 1L || !level %in% spec$levels || length(year) != 1L || is.na(year) ||
+        !as.character(year) %in% as.character(spec$years)) stop("Choose a supported geography and modern year.")
+    year <- as.integer(year)
+    if (exists(level, envir = cache, inherits = FALSE) && identical(cache[[level]]$year, year))
+      return(cache[[level]]$data)
+    # A completed analysis retains its own rows when another session changes years.
+    if (exists(level, envir = cache, inherits = FALSE)) rm(list = level, envir = cache)
+    gc(verbose = FALSE)
+    if (!is.null(manifest)) {
+      data <- read_cached(paste0(level, "-", year, ".rds"), level)
+    } else {
+      panel <- read_app_data(file.path(source_dir, spec$sources[[level]]), level)
+      data <- panel[!is.na(panel$year) & panel$year == year, , drop = FALSE]
+      rm(panel)
+      gc(verbose = FALSE)
+    }
+    if (!nrow(data) || anyNA(data$year) || any(data$year != year))
+      stop(paste("The app dataset has invalid or missing rows for", level, year))
+    cache[[level]] <- list(year = year, data = data)
+    data
+  }
+  get_state <- function() {
+    data <- if (is.null(manifest)) haven::read_dta(file.path(source_dir, spec$sources[["State"]])) else read_cached("state.rds", "State")
+    if (!identical(sort(unique(as.integer(data$year))), spec$years) || anyNA(data$year))
+      stop("The state dataset must contain all modern years from 2001 to 2022.")
+    data
+  }
+  cache_info <- function() {
+    lapply(as.list(cache), function(entry) list(year = entry$year, rows = nrow(entry$data),
+      megabytes = as.numeric(object.size(entry$data)) / 1024^2))
+  }
+  list(get_year = get_year, get_state = get_state, cache_info = cache_info, cached = !is.null(manifest))
+}
+
 tryCatch({
-  msa_data    <- read_app_data("MSA_analysis_data.dta", "MSA")
-  county_data <- read_app_data("master_county_build.dta", "County")
-  state_data  <- haven::read_dta("State_CH_analysis_data.dta")
+  app_data_loader <- make_app_data_loader()
+  get_app_year <- app_data_loader$get_year
+  state_data <- app_data_loader$get_state()
 }, error = function(e) {
   stop(paste("Could not load the app datasets:", conditionMessage(e)))
 })
@@ -1448,7 +1521,7 @@ server <- function(input, output, session) {
             spatial_cutoff <- safe_numeric(input$msa_spatial_cutoff, 100)
           })
           
-          df <- msa_data %>%
+          df <- get_app_year("MSA", year_modern) %>%
             filter(year == year_modern) %>%
             rename(lat = lat_DD, lon = lon_DD, state_id = modern_state_fe,
                    avg_schooling = msa_schooling_09, college_share = college_share_09)
@@ -1507,7 +1580,7 @@ server <- function(input, output, session) {
             spatial_cutoff <- safe_numeric(input$county_spatial_cutoff, 100)
           })
           
-          df <- county_data %>%
+          df <- get_app_year("County", year_modern) %>%
             filter(year == year_modern) %>%
             rename(state_id = modern_state_fe)
           

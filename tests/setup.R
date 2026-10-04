@@ -22,14 +22,17 @@ defaults <- list(analysis_level="MSA", year_modern="2010", analysis_type="IV", u
   county_msa_restriction=FALSE, geo_controls=character(), water_controls=character(), water_year="1820",
   map_size=75, show_map=FALSE)
 fixest::setFixest_notes(FALSE)
+fixture_loader <- app$make_app_data_loader()
 for (level in c("MSA", "County")) {
-  filename <- if (level == "MSA") "MSA_analysis_data.dta" else "master_county_build.dta"
-  dataset <- app$read_app_data(file.path(repo, filename), level)
-  app[[if (level == "MSA") "msa_data" else "county_data"]] <- dataset[dataset$year %in% 2010, ]
-  rm(dataset)
-  gc()
+  app[[if (level == "MSA") "msa_data" else "county_data"]] <- fixture_loader$get_year(level, 2010)
 }
-app$state_data <- haven::read_dta(file.path(repo, "State_CH_analysis_data.dta"))
+app$state_data <- fixture_loader$get_state()
+rm(fixture_loader)
+# Model fixtures can replace or modify these frames without using the production cache.
+app$get_app_year <- function(level, year) {
+  data <- app[[if (level == "MSA") "msa_data" else "county_data"]]
+  data[!is.na(data$year) & data$year == as.integer(year), , drop = FALSE]
+}
 stopifnot(nrow(app$state_data) == 48L * 22L, !anyDuplicated(app$state_data[c("statefips", "year")]))
 original <- list(MSA = app$msa_data, County = app$county_data)
 

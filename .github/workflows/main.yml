@@ -58,6 +58,20 @@ jobs:
       - name: Check strict deployment dependencies
         run: Rscript --vanilla .github/scripts/run-locked.R .github/scripts/check-deployment.R
 
+      - name: Prepare data by modern year
+        run: Rscript --vanilla .github/scripts/run-locked.R .github/scripts/build-app-data.R
+
+      - name: Check production memory and rendered results
+        env:
+          APP_TEST_OUTPUT: /tmp/agglomeration-checks
+          APP_MEMORY_LIMIT_MB: "750"
+        run: Rscript --vanilla .github/scripts/run-locked.R tests/check_runtime_memory.R
+
+      - name: Check deployment data files
+        run: |
+          printf '%s\n' 'tests' '.github' 'MSA_analysis_data.dta' 'master_county_build.dta' 'State_CH_analysis_data.dta' > .rscignore
+          Rscript --vanilla .github/scripts/run-locked.R .github/scripts/check-app-bundle.R
+
       - name: Check app models and compare historical instruments
         env:
           APP_TEST_OUTPUT: /tmp/agglomeration-checks
@@ -79,10 +93,6 @@ jobs:
           name: app-validation
           path: /tmp/agglomeration-checks
           if-no-files-found: ignore
-
-      - name: Create .rscignore file
-        run: |
-          printf '%s\n' 'tests' '.github' > .rscignore
 
       - name: Deploy to shinyapps.io
         if: github.ref == 'refs/heads/main'

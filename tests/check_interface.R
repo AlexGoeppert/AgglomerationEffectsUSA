@@ -7,7 +7,7 @@ local({
     if (!is.call(expr) || !identical(expr[[1]], as.name("<-"))) next
     name <- as.character(expr[[2]])
     function_definition <- is.call(expr[[3]]) && identical(expr[[3]][[1]], as.name("function"))
-    if (function_definition || grepl("^(help_|historical_census_years$|geographic_notes$)", name)) eval(expr, app)
+    if (function_definition || grepl("^(help_|historical_census_years$|geographic_notes$|area_population_omissions$)", name)) eval(expr, app)
   }
   markup <- lapply(c("MSA", "County"), function(level)
     htmltools::renderTags(tagList(app$geography_settings_ui(level), app$geography_transport_ui(level)))$html)

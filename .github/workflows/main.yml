@@ -17,6 +17,7 @@ jobs:
     env:
       CXXFLAGS: "-Wno-error=format-security"
       R_LIBS_USER: /tmp/agglomeration-r-library
+      R_LIBS_SITE: /tmp/agglomeration-r-library
       RENV_PATHS_ROOT: /tmp/agglomeration-renv
       RENV_CONFIG_CONSENT: "TRUE"
 
@@ -53,6 +54,9 @@ jobs:
             /tmp/agglomeration-r-library
             /tmp/agglomeration-renv
           key: r-4.5.3-linux-${{ hashFiles('renv.lock') }}
+
+      - name: Check strict deployment dependencies
+        run: Rscript .github/scripts/check-deployment.R
 
       - name: Check app models and compare historical instruments
         env:

@@ -1367,14 +1367,14 @@ server <- function(input, output, session) {
     standard_errors <- c("Cluster on Instrument" = "cluster_instrument",
       "Cluster on State" = "cluster_state", "Spatial (Conley)" = "spatial", "Robust" = "robust")
     if (is_aggregated_population(list(instrument_type = input$msa_instrument_type))) names(standard_errors)[1] <- "Cluster on MSA"
-    else if (input$msa_instrument_type == "overlap") names(standard_errors)[1] <- "Cluster on Historical County"
+    else if (identical(input$msa_instrument_type, "overlap")) names(standard_errors)[1] <- "Cluster on Historical County"
     if (ch) standard_errors <- standard_errors[standard_errors != "spatial"]
     selected_se <- isolate(input$msa_se_spec)
     if (is.null(selected_se) || !selected_se %in% standard_errors) selected_se <- "cluster_instrument"
     updateSelectInput(session, "msa_se_spec", choices = standard_errors, selected = selected_se)
     county_errors <- c("Cluster on Instrument" = "cluster_instrument", "Cluster on State" = "cluster_state", "Spatial (Conley)" = "spatial", "Robust" = "robust")
     if (is_aggregated_population(list(instrument_type = input$county_instrument_type))) names(county_errors)[1] <- "Cluster on County"
-    else if (input$county_instrument_type == "max_density_overlap") names(county_errors)[1] <- "Cluster on Historical County"
+    else if (identical(input$county_instrument_type, "max_density_overlap")) names(county_errors)[1] <- "Cluster on Historical County"
     county_se <- isolate(input$county_se_spec)
     if (is.null(county_se) || !county_se %in% county_errors) county_se <- "cluster_instrument"
     updateSelectInput(session, "county_se_spec", choices = county_errors, selected = county_se)
@@ -1798,7 +1798,9 @@ server <- function(input, output, session) {
       
       selected_type <- if (level == "State") input$state_instrument_type else if (level == "MSA") input$msa_instrument_type else input$county_instrument_type
       population_map <- uses_population_instrument(list(instrument_type = selected_type, approach = input$approach))
-      if (population_map) {
+      if (level == "State") {
+        map_title <- paste("Instrument Map:", instrument_name(selected_type))
+      } else if (population_map) {
         map_title <- "Instrument Map: Historical population (thousands of people)"
       } else if (level == "MSA") {
         year <- input$msa_iv_year
@@ -1826,7 +1828,9 @@ server <- function(input, output, session) {
       }
       
       map_output(list(src = map_path, title = map_title,
-        message = if (population_map)
+        message = if (level == "State")
+          "A map is not available for state instruments."
+        else if (population_map)
           "A map is not available for the population instrument (thousands of people)."
         else if (as.integer(if (level == "MSA") input$msa_iv_year else input$county_iv_year) >= 1870)
           "The 1870–1900 instruments are available for estimation; map images for these years are not included."

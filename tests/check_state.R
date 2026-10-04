@@ -176,11 +176,17 @@ local({
         sample_scope = scope, instrument_form = option$scale, msa_density_measure = 'average',
         approach = 'density', use_fe = TRUE, geo_controls = 'terrain', show_map = FALSE, run_analysis = 1)
       session$flushReact()
+      session$setInputs(msa_density_measure = 'CH')
+      session$flushReact()
       result <<- isolate(analysis_output())
       if (!is.null(result$error)) stop(result$error)
       check_estimate(result)
       stopifnot(identical(state_ids(result), expected_ids), result$fe_type == 'No',
         length(result$controls_vec) == 0L, result$year_modern == 2020L)
+      map <- isolate(map_output())
+      stopifnot(is.null(map$src),
+        identical(map$title, paste('Instrument Map:', app$instrument_name(option$construction))),
+        identical(map$message, 'A map is not available for state instruments.'))
       used <- used_data(result)
       original_instrument <- as.numeric(used[[index]])
       expected_instrument <- if (option$prefix == 'HCH') original_instrument else

@@ -1951,7 +1951,7 @@ server <- function(input, output, session) {
       note <- paste0(note, ' The instrument is the full population of the highest-density historical county meeting the ',
         escape(overlap_pct), '% overlap threshold, without area weights.')
     if (identical(instrument_type, "historical_ch")) note <- paste0(note,
-      ' The historical instrument is the population-weighted average of log population density across historical reporting areas assigned geographically to each modern state. Its construction is fixed at the theta = 1 limit; it is not logged again.')
+      ' The historical instrument is the population-weighted average of log population density across historical reporting areas assigned geographically to each modern state. It is the theta0 → 1 limit of the normalized historical CH index and is used directly.')
     note <- paste0(note, ' Instrument scale: ', instrument_units(list(instrument_type = instrument_type,
       approach = approach, instrument_form = instrument_form)), '.')
     if (length(diagnostic_models)) {

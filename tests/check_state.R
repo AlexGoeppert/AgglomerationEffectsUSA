@@ -85,10 +85,6 @@ for (year in years) for (construction in c('county_population', 'area_population
         model$instrument_relevance$nobs == nobs(model),
         model$instrument_relevance$evaluated_theta == model$theta,
         model$instrument_relevance$covariance == 'HC0')
-      if (year == 1900 && scope == 'states_only') {
-        expected_s <- if (construction == 'area_population') 1.4868677788548883 else 1.2606478772765684
-        stopifnot(abs(model$stock_wright$statistic - expected_s) < 1e-10)
-      }
     } else stopifnot(is.null(model$stock_wright), is.null(model$anderson_rubin), is.null(model$instrument_relevance),
       !grepl('Stock–Wright LM S', output$results_table$html, fixed = TRUE),
       !grepl('Anderson–Rubin Wald χ²', output$results_table$html, fixed = TRUE),
@@ -146,25 +142,162 @@ for (construction in c('county_population', 'area_population')) for (scope in c(
     all(result$data_for_fs[[paste0(prefix, 'valid_1900', suffix)]] == 1L))
   check_estimate(result)
 }
-for (scope in c('states_only', 'states_territories')) for (iv_year in if (scope == 'states_only') c(1830, 1840, 1850) else c(1830, 1840)) {
+# Test the reported 2020/1900 case using the rebuilt data and actual app controls.
+local({
+  original_state <- app$state_data
+  on.exit({app$state_data <- original_state})
+  options <- list(
+    AW_levels = list(construction = 'area_population', scale = 'levels', prefix = 'AW'),
+    AW_log = list(construction = 'area_population', scale = 'log', prefix = 'AW'),
+    GG_levels = list(construction = 'county_population', scale = 'levels', prefix = 'GG'),
+    GG_log = list(construction = 'county_population', scale = 'log', prefix = 'GG'),
+    HCH_levels = list(construction = 'historical_ch', scale = 'levels', prefix = 'HCH'),
+    HCH_log = list(construction = 'historical_ch', scale = 'log', prefix = 'HCH'))
+  used_data <- function(result) result$data_for_fs[result$models[[1]]$rows, , drop = FALSE]
+  state_ids <- function(result) sort(as.integer(used_data(result)$statefips))
+  estimates <- list()
+  members <- list()
+  scope_members <- list()
+  run_option <- function(option, scope, sample) {
+    result <- NULL
+    suffix <- if (scope == 'states_only') '_s' else ''
+    index <- paste0(if (option$prefix == 'HCH') 'HCH_' else paste0(option$prefix, 'pop_'), '1900', suffix)
+    valid <- paste0(option$prefix, 'valid_1900', suffix)
+    panel <- app$state_data[app$state_data$year == 2020, , drop = FALSE]
+    expected <- panel[[valid]] == 1L & is.finite(panel[[index]]) &
+      is.finite(panel$LHS) & is.finite(panel$RHS) & panel$ch_complete == 1L
+    if (option$prefix == 'HCH') expected <- expected &
+      is.finite(panel[[paste0('HCHpop_1900', suffix)]]) & panel[[paste0('HCHpop_1900', suffix)]] > 0
+    else expected <- expected & if (option$scale == 'log') panel[[index]] > 0 else panel[[index]] >= 0
+    expected_ids <- sort(as.integer(panel$statefips[which(expected)]))
+    shiny::testServer(app$server, {
+      session$setInputs(analysis_level = 'State', year_modern = '2020', analysis_type = 'IV',
+        state_sample_year = '1900', state_iv_year = '1900', state_instrument_type = option$construction,
+        sample_scope = scope, instrument_form = option$scale, msa_density_measure = 'average',
+        approach = 'density', use_fe = TRUE, geo_controls = 'terrain', show_map = FALSE, run_analysis = 1)
+      session$flushReact()
+      result <<- isolate(analysis_output())
+      if (!is.null(result$error)) stop(result$error)
+      check_estimate(result)
+      stopifnot(identical(state_ids(result), expected_ids), result$fe_type == 'No',
+        length(result$controls_vec) == 0L, result$year_modern == 2020L)
+      used <- used_data(result)
+      original_instrument <- as.numeric(used[[index]])
+      expected_instrument <- if (option$prefix == 'HCH') original_instrument else
+        if (option$scale == 'log') log(original_instrument) else original_instrument / 1000
+      stopifnot(isTRUE(all.equal(as.numeric(used$instrument), expected_instrument, tolerance = 1e-12)))
+      if (option$prefix == 'HCH') stopifnot(any(used$instrument < 0),
+        result$instrument_form == 'historical_ch', result$log_nonpositive_n == 0L,
+        grepl('theta0 → 1 limit of the normalized historical CH index', output$results_table$html, fixed = TRUE))
+      else stopifnot(result$instrument_form == option$scale)
+      model <- result$models[[1]]
+      yr <- used$LHS - mean(used$LHS)
+      zr <- used$instrument - mean(used$instrument)
+      score <- yr * zr
+      expected_s <- sum(score)^2 / sum(score^2)
+      slope <- sum(zr * yr) / sum(zr^2)
+      variance <- sum((zr * (yr - slope * zr))^2) / sum(zr^2)^2
+      expected_ar <- slope^2 / variance
+      stopifnot(abs(model$stock_wright$statistic - expected_s) < 1e-9,
+        abs(model$anderson_rubin$statistic - expected_ar) < 1e-9)
+      csv <- read.csv(output$download_coefficients)
+      stopifnot(all(csv$instrument_form == result$instrument_form),
+        all(csv$instrument_units == app$instrument_units(result)),
+        all(csv$instrument_year == 1900), all(csv$sample_year == 1900))
+    })
+    model <- result$models[[1]]
+    label <- paste(option$prefix, option$scale, sep = '_')
+    estimates[[length(estimates) + 1L]] <<- data.frame(scope, sample, instrument = label,
+      n = nobs(model), elasticity = coef(model)[['ch_elasticity']],
+      se = sqrt(vcov(model)['ch_elasticity', 'ch_elasticity']),
+      S = model$stock_wright$statistic, S_p = model$stock_wright$p_value,
+      AR = model$anderson_rubin$statistic, AR_p = model$anderson_rubin$p_value)
+    used <- used_data(result)
+    members[[length(members) + 1L]] <<- data.frame(scope, sample, instrument = label,
+      statefips = as.integer(used$statefips), state = used$state_name, value = used$instrument)
+    result
+  }
+  for (scope in c('states_only', 'states_territories')) {
+    app$state_data <- original_state
+    native <- lapply(options, run_option, scope = scope, sample = 'available')
+    scope_members[[scope]] <- lapply(native, state_ids)
+    expected_n <- if (scope == 'states_only') 42L else 43L
+    for (name in c('AW_levels', 'AW_log', 'HCH_levels', 'HCH_log'))
+      stopifnot(nobs(native[[name]]$models[[1]]) == expected_n,
+        all(c(20L, 29L) %in% state_ids(native[[name]]))) # Kansas and Missouri
+    for (pair in list(c('AW_levels', 'AW_log'), c('GG_levels', 'GG_log'), c('HCH_levels', 'HCH_log')))
+      stopifnot(identical(state_ids(native[[pair[1]]]), state_ids(native[[pair[2]]])))
+    stopifnot(isTRUE(all.equal(coef(native$HCH_levels$models[[1]]), coef(native$HCH_log$models[[1]]), tolerance = 1e-12)),
+      isTRUE(all.equal(vcov(native$HCH_levels$models[[1]]), vcov(native$HCH_log$models[[1]]), tolerance = 1e-12)))
+    common_ids <- Reduce(intersect, lapply(native, state_ids))
+    stopifnot(length(common_ids) >= 4L)
+    app$state_data <- original_state[original_state$year != 2020 | original_state$statefips %in% common_ids, , drop = FALSE]
+    common <- lapply(options, run_option, scope = scope, sample = 'common')
+    reference <- used_data(common[[1]])
+    fields <- c('statefips', 'LHS', 'RHS', grep('^(nc|ac)[0-9]+$', names(reference), value = TRUE))
+    reference <- reference[order(reference$statefips), fields]
+    for (result in common) {
+      stopifnot(identical(state_ids(result), sort(common_ids)))
+      used <- used_data(result)
+      stopifnot(isTRUE(all.equal(reference, used[order(used$statefips), fields], check.attributes = FALSE)))
+    }
+  }
+  for (name in c('AW_levels', 'HCH_levels')) {
+    state_ids_only <- scope_members$states_only[[name]]
+    state_ids_all <- scope_members$states_territories[[name]]
+    stopifnot(all(state_ids_only %in% state_ids_all),
+      identical(as.integer(setdiff(state_ids_all, state_ids_only)), 35L)) # New Mexico
+  }
+  write.csv(do.call(rbind, estimates), file.path(work, 'state_2020_1900_options.csv'), row.names = FALSE)
+  write.csv(do.call(rbind, members), file.path(work, 'state_2020_1900_option_samples.csv'), row.names = FALSE)
+  cat('State 2020/1900 checks passed: native/common samples, exact logs, signed HCH and restored Kansas/Missouri coverage.\n')
+})
+# Construct two known IV roots rather than depending on an old geographic sample.
+local({
+  original_state <- app$state_data
+  on.exit({app$state_data <- original_state})
+  fixture <- original_state
+  retained <- which(fixture$year == 2010)
+  i <- seq_along(retained)
+  n <- cbind(exp(1 + i / 25), exp(.5 + sin(i * .31)))
+  a <- cbind(rep(1, length(i)), rep(2, length(i)))
+  direct_index <- function(theta) log(rowSums(n^theta * a^(1 - theta)) / rowSums(n))
+  first <- direct_index(1.05)
+  second <- direct_index(1.5)
+  z <- qr.resid(qr(cbind(1, second - first)), sin(i * .73))
+  noise <- qr.resid(qr(cbind(1, z)), cos(i * .41))
+  y <- 9 + first + .01 * noise
+  stopifnot(sum(z^2) > 1e-4,
+    abs(sum(z * (y - first))) < 1e-10, abs(sum(z * (y - second))) < 1e-10)
+  ncols <- grep('^nc[0-9]+$', names(fixture), value = TRUE)
+  fixture[retained, ncols] <- 0
+  fixture[retained, sub('^nc', 'ac', ncols)] <- 1
+  fixture$nc1[retained] <- n[, 1]
+  fixture$nc2[retained] <- n[, 2]
+  fixture$ac2[retained] <- a[, 2]
+  fixture$LHS[retained] <- y
+  fixture$RHS[retained] <- log(rowSums(n) / rowSums(a))
+  fixture$ch_complete[retained] <- 1L
+  fixture$AWpop_1900_s[retained] <- (z - min(z) + 1) * 1000
+  fixture$AWvalid_1900_s[retained] <- 1L
+  app$state_data <- fixture
   shiny::testServer(app$server, {
     session$setInputs(analysis_level = 'State', year_modern = '2010', analysis_type = 'IV',
-      state_sample_year = '1790', state_iv_year = as.character(iv_year), state_instrument_type = 'area_population',
-      sample_scope = scope, msa_density_measure = 'average', approach = 'density', show_map = FALSE, run_analysis = 1)
+      state_sample_year = '1900', state_iv_year = '1900', state_instrument_type = 'area_population',
+      sample_scope = 'states_only', instrument_form = 'levels', msa_density_measure = 'average',
+      approach = 'density', show_map = FALSE, run_analysis = 1)
     session$flushReact()
     result <- isolate(analysis_output())
     if (!is.null(result$error)) stop(result$error)
     stopifnot(length(result$model_warnings) == 1L,
       grepl('multiple solutions', result$model_warnings, fixed = TRUE),
       grepl(result$model_warnings, output$sample_note$html, fixed = TRUE))
-    if (scope == 'states_territories' && iv_year == 1830) {
-      csv <- read.csv(output$download_coefficients)
-      html <- paste(readLines(output$download_results, warn = FALSE), collapse = '\n')
-      stopifnot(all(csv$estimation_notes == result$model_warnings),
-        grepl(result$model_warnings, html, fixed = TRUE))
-    }
+    csv <- read.csv(output$download_coefficients)
+    html <- paste(readLines(output$download_results, warn = FALSE), collapse = '\n')
+    stopifnot(all(csv$estimation_notes == result$model_warnings),
+      grepl(result$model_warnings, html, fixed = TRUE))
   })
-}
+})
 shiny::testServer(app$server, {
   session$setInputs(analysis_level = 'State', year_modern = '2010', analysis_type = 'IV',
     state_sample_year = '1900', state_iv_year = '1910', state_instrument_type = 'area_population',

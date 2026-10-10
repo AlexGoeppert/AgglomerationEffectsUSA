@@ -80,6 +80,17 @@ run_checked <- function(settings, exports = FALSE) {
       csv <- read.csv(output$download_coefficients)
       stopifnot(all(csv$geography == result$analysis_level), all(csv$instrument_year == result$iv_year),
         all(csv$instrument_construction == app$instrument_name(result$instrument_type, result$approach)))
+      stopifnot(all(csv$sample_scope == result$sample_scope), all(csv$sector_code == result$sectors),
+        all(csv$standard_error_method == result$se_spec),
+        all(csv$use_state_fixed_effects == !identical(result$fe_type, "No")),
+        all(csv$college_adjustment == isTRUE(result$apply_college_adj)),
+        all(csv$mining_filter_active == isTRUE(result$mining_filter_active)))
+      if (isTRUE(result$apply_college_adj)) stopifnot(all(csv$college_coefficient == result$college_coeff))
+      else stopifnot(all(is.na(csv$college_coefficient)))
+      if (isTRUE(result$mining_filter_active)) stopifnot(all(csv$mining_threshold == result$mining_threshold))
+      else stopifnot(all(is.na(csv$mining_threshold)))
+      if (is.null(result$county_msa_restriction)) stopifnot(all(is.na(csv$county_msa_restriction)))
+      else stopifnot(all(csv$county_msa_restriction == result$county_msa_restriction))
       if (inherits(result$models[[1]], "ch_model") && result$analysis_type == "IV") {
         stopifnot(all(c("stock_wright_lm_s", "stock_wright_p_value", "stock_wright_df", "stock_wright_null_elasticity",
           "ch_local_instrument_wald_f", "ch_local_evaluated_theta", "ch_local_covariance", "ch_local_relevance_note") %in% names(csv)))

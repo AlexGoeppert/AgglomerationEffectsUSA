@@ -174,6 +174,7 @@ help_analysis_type       <- paste(
   " • OLS – regress modern productivity on the employment measure selected under Approach.",
   " • IV – instrument that employment measure with the selected historical population or density measure.",
   " • First-stage regression – regress the selected modern employment measure on the historical instrument.",
+  "The first stage uses the sample of the selected IV outcome. Selecting both schooling adjustments shows a separate first stage for each outcome sample. OLS also retains the selected historical instrument's available sample for comparison.",
   paste("For CH IV:", help_stock_wright, help_ch_instrument_wald),
   sep = "\n")
 
@@ -540,6 +541,21 @@ instrument_units <- function(details) {
   } else if (population) "Thousands of people" else "People/km²"
 }
 
+data_quality_notes <- function(details) {
+  spatial <- if (identical(details$analysis_level, "State"))
+    any(details$instrument_type %in% c("area_population", "historical_ch"))
+  else if (any(details$analysis_level %in% c("County", "MSA")))
+    any(details$instrument_type %in% c("overlap", "max_density_overlap", "weighted_density_overlap", "area_population"))
+  else FALSE
+  if (!spatial || !any(c(details$iv_year, details$sample_year) %in% 1900)) return(character())
+  # Both NHGIS boundary versions retain the 0.280068 km2 area: https://www.nhgis.org/gis-files
+  # Historical context, not a verified replacement for the 1900 boundary (pp. 2, 4):
+  # https://www.dhr.virginia.gov/VLR_to_transfer/PDFNoms/138-0042_Winchester_Historic_District_1980_Final_Nomination.pdf
+  paste("The selected sample or instrument uses 1900 spatial data. The historical boundary for Winchester, Virginia, remains unverified.",
+    "Its mapped area is unusually small (0.280 km²), which affects historical density and may affect area allocation.",
+    "Treat results using these spatial instruments as provisional.")
+}
+
 sample_exclusion_notes <- function(details) {
   notes <- character()
   if (isTRUE(details$log_nonpositive_n > 0L)) notes <- c(notes, paste(details$log_nonpositive_n,
@@ -903,8 +919,14 @@ fit_ch_model <- function(data, dep_var, controls_vec = character(), fe_part = "0
   theta <- if (boundary) theta_grid[best] else
     optimize(objective, interval = theta_grid[c(best - 1L, best + 1L)], tol = 1e-11)$minimum
   if (method == "IV") {
-    zr <- partial(d$instrument)
-    if (sqrt(sum(zr^2)) <= 1e-10 * max(1, sqrt(sum(d$instrument^2)))) {
+    # Check residual variation relative to the instrument's scale.
+    instrument_scale <- max(abs(d$instrument))
+    if (instrument_scale == 0) {
+      fail("The historical instrument has no variation after the selected controls and fixed effects.")
+    }
+    instrument_scaled <- d$instrument / instrument_scale
+    zr <- partial(instrument_scaled)
+    if (sqrt(sum(zr^2)) <= 1e-10 * sqrt(sum(instrument_scaled^2))) {
       fail("The historical instrument has no variation after the selected controls and fixed effects.")
     }
     zr <- zr / sqrt(sum(zr^2))
@@ -1036,6 +1058,7 @@ model_coefficients <- function(details) {
                estimate = table[, 1], std_error = table[, 2],
                statistic = table[, 3], p_value = table[, 4],
                conf_low = interval[terms, 1], conf_high = interval[terms, 2],
+               confidence_method = "Conventional Wald (95%)",
                observations = stats::nobs(model), geography = details$analysis_level,
                year = details$year_modern, method = model_description(details),
                density_measure = details$density_measure, approach = approach_name(details$approach),
@@ -1082,8 +1105,10 @@ result_plot <- function(details) {
                     paste(control_label("instrument", details$instrument_type, details$approach, details$instrument_form), "coefficient")
                   } else if (identical(details$density_measure, "CH")) "Ciccone–Hall elasticity (theta − 1)" else if (identical(details$approach, "employment")) "Log employment coefficient" else "Employment density coefficient",
                   y = NULL, title = paste(details$analysis_level, "·", details$year_modern, "·", approach_name(details$approach), "·", model_description(details)),
-                  subtitle = "Point estimates and 95% confidence intervals",
-                  caption = "Intervals use the selected standard-error specification.") +
+                  subtitle = "Point estimates and 95% Wald confidence intervals",
+                  caption = if (details$analysis_type == "IV")
+                    "Intervals use the selected standard errors and are not robust to weak instruments." else
+                    "Intervals use the selected standard-error specification.") +
     ggplot2::theme_minimal(base_size = 14, base_family = "sans") +
     ggplot2::theme(panel.grid.major.y = ggplot2::element_blank(), panel.grid.minor = ggplot2::element_blank(),
                     panel.grid.major.x = ggplot2::element_line(color = "#e6e6e6"),
@@ -1383,7 +1408,7 @@ ui <- fluidPage(title = "Agglomeration Effects USA",
       conditionalPanel("input.show_coefficient_chart == true && input.run_analysis > 0",
         div(class = "optional-chart",
           h4("Coefficient Estimates"),
-          p(class = "estimate-caption", "Points show the selected coefficient; lines show 95% confidence intervals."),
+          p(class = "estimate-caption", "Points show the selected coefficient; lines show conventional 95% Wald confidence intervals."),
           withSpinner(plotOutput("effect_plot", height = "360px"), type = 6, color = "#007BFF")
         )
       ),
@@ -1679,7 +1704,8 @@ server <- function(input, output, session) {
         
         new_controls <- resolve_geo_controls(input$geo_controls, input$water_controls, input$water_year)
         controls_vec <- unique(c(controls_vec, new_controls))
-        req_cols <- c(sample_col, instr_col, instrument_id_col, controls_vec)
+        req_cols <- c(sample_col, instr_col,
+          if (se_spec == "cluster_instrument") instrument_id_col, controls_vec)
         missing_cols <- req_cols[!req_cols %in% names(df)]
         if (length(missing_cols) > 0) {
           stop(glue("Error: Required column(s) not found: {paste(missing_cols, collapse=', ')}. Check selections or data file."))
@@ -1710,9 +1736,13 @@ server <- function(input, output, session) {
           if (!unit_id %in% names(df)) stop("Modern geographic identifiers are required for the population instrument.")
           df$clusterID <- as.integer(as.factor(df[[unit_id]]))
         } else if (!is.null(instrument_id_col)) {
-          if (any(is.na(df[[instrument_id_col]]) | trimws(df[[instrument_id_col]]) == ""))
+          historical_id <- if (instrument_id_col %in% names(df)) as.character(df[[instrument_id_col]])
+            else rep(NA_character_, nrow(df))
+          missing_id <- is.na(historical_id) | trimws(historical_id) == ""
+          if (se_spec == "cluster_instrument" && any(missing_id))
             stop("Historical county identifiers are missing for the selected overlap instrument. Rebuild the instrument inputs.")
-          df$clusterID <- as.integer(as.factor(df[[instrument_id_col]]))
+          historical_id[missing_id] <- NA_character_
+          df$clusterID <- as.integer(as.factor(historical_id))
         } else df$clusterID <- as.integer(as.factor(df$instrument))
         sector_missing_n <- sum(!is.finite(df$LHS))
         if (apply_college_adj) {
@@ -1751,7 +1781,7 @@ server <- function(input, output, session) {
           "3" = setNames(c("LHS_adj1", "LHS_adj2"), c("Same Return Adj.", "Specific Return Adj.")))
         dep_vars <- dep_vars_map[[as.character(schooling_adj)]]
         if (analysis_type == "First-stage Regression") {
-          dep_vars <- setNames("RHS", "First stage")
+          names(dep_vars) <- if (schooling_adj == 0) "First stage" else paste("First stage:", names(dep_vars))
         }
         controls_part <- if (length(controls_vec) > 0) paste("+", paste(controls_vec, collapse = " + ")) else ""
         fe_part <- "0"
@@ -1812,12 +1842,15 @@ server <- function(input, output, session) {
                                 "First-stage Regression" = glue("RHS ~ instrument {controls_part} | {fe_part}"),
                                 stop("Invalid 'analysis_type' specified.")
           )
+          # Match each first stage to the observations usable by its selected IV outcome.
+          estimation_subset <- if (analysis_type == "First-stage Regression") is.finite(df[[dep_var_name]]) else NULL
           
           model <- withCallingHandlers(
             if (density_measure == "CH") {
               fit_ch_model(data = df, dep_var = dep_var_name, controls_vec = controls_vec,
                 fe_part = fe_part, method = analysis_type, se_spec = se_spec)
-            } else feols(as.formula(formula_str), data = df, vcov = vcov_arg, fixef.rm = "singletons"),
+            } else feols(as.formula(formula_str), data = df, vcov = vcov_arg,
+              fixef.rm = "singletons", subset = estimation_subset),
             warning = record_model_warning
           )
           models[[model_name]] <- model
@@ -1908,10 +1941,13 @@ server <- function(input, output, session) {
       
       selected_type <- if (level == "State") input$state_instrument_type else if (level == "MSA") input$msa_instrument_type else input$county_instrument_type
       population_map <- uses_population_instrument(list(instrument_type = selected_type, approach = input$approach))
+      selected_units <- instrument_units(list(instrument_type = selected_type, approach = input$approach,
+        instrument_form = input$instrument_form))
       if (level == "State") {
         map_title <- paste("Instrument Map:", instrument_name(selected_type))
+        if (population_map) map_title <- paste(map_title, "·", selected_units)
       } else if (population_map) {
-        map_title <- "Instrument Map: Historical population (thousands of people)"
+        map_title <- paste("Instrument Map: Historical population ·", selected_units)
       } else if (level == "MSA") {
         year <- input$msa_iv_year
         pct <- input$msa_overlap_pct
@@ -1921,7 +1957,7 @@ server <- function(input, output, session) {
         filename <- glue("overlap_{pct}pct_{year}.png")
         subfolder <- glue("{pct}pct")
         map_path <- paste(base_folder, "overlap", subfolder, filename, sep="/")
-        map_title <- glue("Instrument Map: Maximum population density among {year} historical counties with {pct}% minimum overlap with modern MSA")
+        map_title <- glue("Instrument Map: Maximum population density in levels among {year} historical counties with {pct}% minimum overlap with modern MSA")
         
       } else { # County Logic
         type <- input$county_instrument_type
@@ -1933,15 +1969,18 @@ server <- function(input, output, session) {
           filename <- glue("max_overlap_{pct}pct_{year}.png")
           subfolder <- glue("{pct}pct")
           map_path <- paste(base_folder, "max_overlap", subfolder, filename, sep="/")
-          map_title <- glue("Instrument Map: Maximum population density among {year} historical counties with {pct}% minimum overlap with modern county")
+          map_title <- glue("Instrument Map: Maximum population density in levels among {year} historical counties with {pct}% minimum overlap with modern county")
         }
       }
       
-      map_output(list(src = map_path, title = map_title,
+      map_note <- if (!is.null(map_path)) paste(
+        "This precomputed map shows historical population density in levels, before regression controls and sample exclusions.",
+        if (identical(input$instrument_form, "log")) "The regression uses the natural log of these values." else "") else NULL
+      map_output(list(src = map_path, title = map_title, note = map_note,
         message = if (level == "State")
           "A map is not available for state instruments."
         else if (population_map)
-          "A map is not available for the population instrument (thousands of people)."
+          paste("A map is not available for this population instrument. Selected scale:", paste0(selected_units, "."))
         else if (as.integer(if (level == "MSA") input$msa_iv_year else input$county_iv_year) >= 1870)
           "The 1870–1900 instruments are available for estimation; map images for these years are not included."
         else NULL))
@@ -2237,7 +2276,8 @@ server <- function(input, output, session) {
     req(info)
     
     if (!is.null(info$src) && file.exists(info$src)) {
-      imageOutput("instrument_map_render", width = paste0(input$map_size, "%"), height = "auto")
+      tagList(if (!is.null(info$note)) p(class = "help-block", info$note),
+        imageOutput("instrument_map_render", width = paste0(input$map_size, "%"), height = "auto"))
     } else {
       div(class = "help-text",
           if (!is.null(info$message)) info$message else "Map image not found. Please check your selections and verify your file structure in the 'www' folder.")
@@ -2276,7 +2316,7 @@ server <- function(input, output, session) {
     missing_geo <- if (is.null(details$geo_missing_n)) 0L else details$geo_missing_n
     selected <- details$new_controls
     omitted <- unique(unlist(lapply(details$models, function(m) m$collin.var)))
-    notices <- lapply(sample_exclusion_notes(details), p)
+    notices <- lapply(c(sample_exclusion_notes(details), data_quality_notes(details)), p)
     if (isTRUE(details$ch_missing_n > 0L)) notices <- c(notices, list(p(paste(details$ch_missing_n,
       "eligible observations have incomplete county employment or land area for the Ciccone–Hall model."))))
     if (missing_geo > 0) notices <- c(notices, list(p(paste(format(missing_geo, big.mark = ","),
@@ -2311,16 +2351,28 @@ server <- function(input, output, session) {
       table$controls <- paste(details$controls_vec, collapse = "; ")
       if (!identical(details$analysis_level, "State")) table$water_year <- details$water_year
       table$standard_errors <- if (details$se_spec == "cluster_instrument") instrument_cluster_label(details) else details$se_spec
+      table$standard_error_method <- details$se_spec
+      table$spatial_cutoff_km <- if (identical(details$se_spec, "spatial")) details$spatial_cutoff else NA_real_
       table$fixed_effects <- details$fe_type
+      table$use_state_fixed_effects <- !identical(details$fe_type, "No")
       table$sample_year <- details$sample_year
+      table$sample_scope <- details$sample_scope
       table$instrument_year <- details$iv_year
       table$instrument_construction <- instrument_name(details$instrument_type, details$approach)
       if (length(details$model_warnings)) table$estimation_notes <- paste(details$model_warnings, collapse = "; ")
       table$instrument_units <- instrument_units(details)
       table$instrument_form <- if (is.null(details$instrument_form)) "levels" else details$instrument_form
       table$schooling_adjustment <- schooling_adjustment_name(details$schooling_adj)
+      table$sector_code <- details$sectors
+      table$sector <- unname(c("All", "Private", "Manufacturing", "Private non-farm", "Private non-farm/mining")[details$sectors])
+      table$college_adjustment <- isTRUE(details$apply_college_adj)
+      table$college_coefficient <- if (isTRUE(details$apply_college_adj)) details$college_coeff else NA_real_
+      table$mining_filter_active <- isTRUE(details$mining_filter_active)
+      table$mining_threshold <- if (isTRUE(details$mining_filter_active)) details$mining_threshold else NA_real_
+      table$county_msa_restriction <- if (is.null(details$county_msa_restriction)) NA else details$county_msa_restriction
       if (identical(details$fe_type, "historical")) table$fixed_effect_year <- details$sample_year
       if (length(sample_exclusion_notes(details))) table$sample_exclusions <- paste(sample_exclusion_notes(details), collapse = "; ")
+      table$data_quality_notes <- paste(data_quality_notes(details), collapse = "; ")
       if (!is.null(details$overlap_pct)) table$overlap_threshold_pct <- details$overlap_pct
       utils::write.csv(table, file, row.names = FALSE, na = "")
     })
@@ -2359,7 +2411,7 @@ server <- function(input, output, session) {
         `Water-access year` = if (!identical(details$analysis_level, "State")) details$water_year else NULL,
         Controls = if (length(details$controls_vec)) paste(vapply(details$controls_vec, control_label, character(1)), collapse = "; ") else "None")
       spec_html <- paste0("<dt>", esc(names(specifications)), "</dt><dd>", esc(as.character(specifications)), "</dd>", collapse = "")
-      export_notes <- c(sample_exclusion_notes(details), details$model_warnings)
+      export_notes <- c(sample_exclusion_notes(details), data_quality_notes(details), details$model_warnings)
       warning_html <- if (length(export_notes)) paste0('<h2>Estimation notes</h2><p>',
         paste(esc(export_notes), collapse = '</p><p>'), '</p>') else ''
       geo_html <- if (identical(details$analysis_level, "State"))
@@ -2369,7 +2421,7 @@ server <- function(input, output, session) {
       html <- paste0('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agglomeration results</title>',
         '<style>body{font-family:Arial,sans-serif;color:#000000;max-width:1100px;margin:40px auto;padding:0 24px;line-height:1.5}h1{font-size:32px}img{max-width:100%}table{border-collapse:collapse;width:100%;font-size:14px}th,td{padding:7px 10px;text-align:right;border-bottom:1px solid #dddddd}.row-label{text-align:left}th{border-top:2px solid #000000}dt{font-weight:bold;margin-top:10px}dd{margin-left:0}.table-notes{font-size:12px;margin-top:15px}@media print{body{margin:0}}</style><body>',
         '<h1>Agglomeration effects in the United States</h1><p>', esc(paste(details$analysis_level, details$year_modern, model_description(details), sep = ' · ')),
-        '</p><img alt="Coefficient estimates and 95% confidence intervals" src="', chart_data, '">', table, warning_html,
+        '</p><img alt="Coefficient estimates and 95% Wald confidence intervals" src="', chart_data, '">', table, warning_html,
         '<h2>Specification</h2><dl>', spec_html, '</dl>', geo_html, '</body></html>')
       writeLines(html, file, useBytes = TRUE)
     })

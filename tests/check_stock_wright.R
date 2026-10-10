@@ -72,11 +72,19 @@ local({
     groups <- if (se_spec == "robust") NULL else used[[if (se_spec == "cluster_instrument") "clusterID" else "state_id"]]
     same(fit$stock_wright$statistic, manual(used$LHS, used$instrument, design, groups))
     stopifnot(fit$stock_wright$nobs == fit$nobs, fit$stock_wright$df == 1L)
-    scaled <- data
-    scaled$instrument <- scaled$instrument / 1000
-    refit <- app$fit_ch_model(scaled, "LHS", controls_vec = "x1", fe_part = "fe", method = "IV", se_spec = se_spec)
-    same(fit$stock_wright$statistic, refit$stock_wright$statistic)
-    same(fit$coefficients, refit$coefficients)
+    for (scale in c(1e-12, 0.001, 1e12)) {
+      scaled <- data
+      scaled$instrument <- scaled$instrument * scale
+      refit <- app$fit_ch_model(scaled, "LHS", controls_vec = "x1", fe_part = "fe", method = "IV", se_spec = se_spec)
+      same(fit$coefficients, refit$coefficients)
+      same(fit$covariance, refit$covariance)
+      same(fit$stock_wright$statistic, refit$stock_wright$statistic)
+      same(fit$stock_wright$p_value, refit$stock_wright$p_value)
+      same(fit$anderson_rubin$statistic, refit$anderson_rubin$statistic)
+      same(fit$anderson_rubin$p_value, refit$anderson_rubin$p_value)
+      same(fit$instrument_relevance$statistic, refit$instrument_relevance$statistic)
+      stopifnot(identical(fit$rows, refit$rows))
+    }
     stopifnot(is.null(app$fit_ch_model(data, "LHS", controls_vec = "x1", fe_part = "fe", method = "OLS", se_spec = se_spec)$stock_wright))
   }
   failed_data <- data.frame(LHS = -10 * density, instrument = density, nc1 = exp(density), ac1 = 1)

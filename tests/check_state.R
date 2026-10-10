@@ -204,8 +204,11 @@ local({
       stopifnot(identical(state_ids(result), expected_ids), result$fe_type == 'No',
         length(result$controls_vec) == 0L, result$year_modern == 2020L)
       map <- isolate(map_output())
+      expected_map_title <- paste('Instrument Map:', app$instrument_name(option$construction))
+      if (option$prefix != 'HCH') expected_map_title <- paste(expected_map_title, '\u00b7',
+        if (option$scale == 'log') 'Natural log of population (people)' else 'Thousands of people')
       stopifnot(is.null(map$src),
-        identical(map$title, paste('Instrument Map:', app$instrument_name(option$construction))),
+        identical(map$title, expected_map_title),
         identical(map$message, 'A map is not available for state instruments.'))
       used <- used_data(result)
       original_instrument <- as.numeric(used[[index]])

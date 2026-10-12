@@ -1073,6 +1073,7 @@ model_coefficients <- function(details) {
       output$stock_wright_df <- model$stock_wright$df
       output$stock_wright_null_elasticity <- model$stock_wright$null_elasticity
       output$stock_wright_note <- stock_wright_text(model$stock_wright)
+      if (!is.null(model$stock_wright$note)) output$stock_wright_note <- paste(output$stock_wright_note, model$stock_wright$note)
     }
     if (!is.null(model$instrument_relevance)) {
       diagnostic <- model$instrument_relevance
@@ -1081,6 +1082,7 @@ model_coefficients <- function(details) {
       output$ch_local_covariance <- diagnostic$covariance
       output$ch_local_relevance_note <- if (diagnostic$status == "available")
         help_ch_instrument_wald else paste("Instrument Wald F unavailable:", diagnostic$reason)
+      if (!is.null(diagnostic$note)) output$ch_local_relevance_note <- paste(output$ch_local_relevance_note, diagnostic$note)
     }
     output
   })

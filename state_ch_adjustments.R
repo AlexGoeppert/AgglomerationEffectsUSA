@@ -167,8 +167,10 @@ sca_s_test <- function(y, z, W, terms, gamma_influence, state_levels) {
        df = 1L, null_elasticity = 0, nobs = length(y), clusters = length(state_levels),
        status = if (available) "available" else "unavailable",
        reason = if (available) "" else "The adjusted null has no estimable moment variance.",
-       calibration_uncertainty = TRUE, moment = moment, score = score,
-       note = "Adjusted-null S test includes the county geography calibration; validity also requires a regularly identified county calibration.")
+       calibration_uncertainty = ncol(gamma_influence) > 0L, moment = moment, score = score,
+       note = if (ncol(gamma_influence) > 0L)
+         "Adjusted-null S test includes the county geography calibration; validity also requires a regularly identified county calibration." else
+         "The adjusted-null S test subtracts the human-capital index at theta = 1 and conditions on the fixed schooling and college coefficients.")
 }
 
 fit_state_adjusted_ch <- function(data, county, components, settings = list()) {

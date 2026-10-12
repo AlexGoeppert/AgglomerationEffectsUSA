@@ -110,6 +110,13 @@ check_runtime <- function() {
         expected_n = if (scope == "states_only") 42L else 43L)
     }
     for (level in c("MSA", "County")) exercise(list(analysis_level = level), year_switch = TRUE)
+    exercise(list(analysis_level = "State", year_modern = "2020", state_sample_year = "1900", state_iv_year = "1900",
+      state_instrument_type = "area_population", sample_scope = "states_territories", state_ch_mode = "county_adjusted",
+      state_adjustment_type = "both", state_county_instrument = "area_population", state_county_area = TRUE,
+      state_geo_controls = c("terrain", "crop", "climate"),
+      state_water_controls = c("shoreline", "historical_access", "distance", "portage"),
+      state_transport_controls = c("water_1820", "railroads_1840"), state_water_year = "1820",
+      state_schooling_efficiency = TRUE, state_college_externality = TRUE, state_college_coefficient = .75), expected_n = 43L)
     info <- app$app_data_loader$cache_info()
     stopifnot(setequal(names(info), c("MSA", "County")),
       all(vapply(info, function(x) identical(x$year, 2020L), logical(1))))

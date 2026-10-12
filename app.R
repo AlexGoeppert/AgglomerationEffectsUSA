@@ -147,7 +147,7 @@ help_state_instrument <- paste("Glaeser and Gottlieb (2009) sums full historical
   "The historical CH index uses only historical data and a fixed rule. It requires both relevance and the assumption that historical settlement affects current productivity only through the modeled density channel.")
 help_stock_wright <- paste("Stock–Wright LM S tests whether the CH elasticity is zero (theta = 1).",
   "Its p-value uses a chi-squared distribution with one degree of freedom and is robust to weak instruments when the model's moment assumptions hold.",
-  "For county-adjusted CH, the null retains the selected adjustments. The test propagates geography-calibration uncertainty and additionally requires a regularly identified county calibration.",
+  "For county-adjusted CH with estimated geography effects, the null retains the selected adjustments. The test propagates geography-calibration uncertainty and additionally requires a regularly identified county calibration.",
   "It tests the zero-effect hypothesis; it does not measure instrument strength.")
 help_ch_instrument_wald <- paste("For CH GMM, Instrument Wald F describes instrument relevance at the fitted theta.",
   "It regresses the CH index's derivative with respect to theta on the historical instrument, using the same sample, controls and fixed effects.",

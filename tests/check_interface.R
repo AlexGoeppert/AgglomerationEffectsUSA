@@ -1,14 +1,19 @@
 # Check the interface and switching without loading the production datasets.
 library(shiny)
 library(glue)
+if (.Platform$OS.type == "windows") invisible(Sys.setlocale("LC_CTYPE", "English_United States.utf8"))
+options(encoding = "UTF-8")
 local({
   app <- new.env(parent = globalenv())
-  for (expr in parse("app.R")) {
+  for (expr in parse("app.R", encoding = "UTF-8")) {
     if (!is.call(expr) || !identical(expr[[1]], as.name("<-"))) next
     name <- as.character(expr[[2]])
     function_definition <- is.call(expr[[3]]) && identical(expr[[3]][[1]], as.name("function"))
     if (function_definition || grepl("^(help_|historical_census_years$|geographic_notes$|area_population_omissions$)", name)) eval(expr, app)
   }
+  # The shared MSA settings now include the county geography CH controls.
+  # Defining this interface loads no production data or estimation engine.
+  source("state_ch_adjustment_interface.R", local = app, encoding = "UTF-8")
   markup <- lapply(c("MSA", "County"), function(level)
     htmltools::renderTags(tagList(app$geography_settings_ui(level), app$geography_transport_ui(level)))$html)
   names(markup) <- c("MSA", "County")
@@ -39,7 +44,7 @@ local({
       !grepl("checked", input_tag(html, paste0(prefix, "mining_filter_active")), fixed = TRUE),
       identical(option_values(html, paste0(prefix, "iv_year")), as.character(app$historical_census_years)),
       grepl("Max Density Overlap", html, fixed = TRUE), grepl("Minimum Overlap (%)", html, fixed = TRUE))
-    transport <- regmatches(html, gregexpr('<input[^>]*name="[^\"]+_controls"[^>]*>', html, perl = TRUE))[[1]]
+    transport <- regmatches(html, gregexpr(paste0('<input[^>]*name="', prefix, 'controls"[^>]*>'), html, perl = TRUE))[[1]]
     checked <- sub('.*value="([^"]+)".*', '\\1', transport[grepl("checked", transport, fixed = TRUE)])
     stopifnot(identical(checked, app$geography_settings_defaults()$controls))
     ids <- regmatches(html, gregexpr('<(?:input|select)[^>]*id="[^"]+"', html, perl = TRUE))[[1]]
@@ -47,7 +52,29 @@ local({
     shared <- c("density_measure", "sectors", "sample_year", "iv_year", "instrument_type",
       if (level == "MSA") "overlap_pct" else "overlap_threshold", "schooling_adj", "apply_college_adj",
       "college_coeff", "mining_filter_active", "mining_threshold", "se_spec", "spatial_cutoff")
-    stopifnot(identical(ids[seq_along(shared)], paste0(prefix, shared)))
+    stopifnot(identical(ids[ids %in% paste0(prefix, shared)], paste0(prefix, shared)))
+  }
+  # Check the additional CH controls explicitly at both aggregate levels.
+  for (level in c("MSA", "State")) {
+    html <- if (level == "MSA") markup$MSA else htmltools::renderTags(app$state_adjustment_settings_ui(level))$html
+    prefix <- paste0(tolower(level), "_")
+    stopifnot(identical(option_values(html, paste0(prefix, "ch_mode")), c("standard", "county_adjusted")),
+      identical(selected_value(html, paste0(prefix, "ch_mode")), "standard"),
+      identical(option_values(html, paste0(prefix, "county_instrument")), c("area_population", "county_population")),
+      identical(selected_value(html, paste0(prefix, "county_instrument")), "area_population"),
+      grepl("checked", input_tag(html, paste0(prefix, "county_area")), fixed = TRUE),
+      identical(selected_value(html, paste0(prefix, "water_year")), "1820"),
+      grepl("County Geography Adjustment", html, fixed = TRUE),
+      !grepl('value="human_capital"', html, fixed = TRUE), !grepl('value="both"', html, fixed = TRUE),
+      !grepl(paste0('id="', prefix, 'schooling_efficiency"'), html, fixed = TRUE))
+    groups <- list(geo_controls = c("terrain", "crop", "climate"),
+      water_controls = c("shoreline", "historical_access", "distance", "portage"),
+      transport_controls = c("water_1820", "railroads_1840"))
+    for (group in names(groups)) {
+      tags <- regmatches(html, gregexpr(paste0('<input[^>]*name="', prefix, group, '"[^>]*>'), html, perl = TRUE))[[1]]
+      checked <- sub('.*value="([^"]+)".*', '\\1', tags[grepl("checked", tags, fixed = TRUE)])
+      stopifnot(identical(checked, groups[[group]]))
+    }
   }
   stopifnot(identical(option_values(markup$County, "county_density_measure"), "average"),
     identical(option_values(markup$MSA, "msa_density_measure"), c("average", "CH")),
@@ -130,5 +157,5 @@ local({
       !grepl("weighted_density_overlap", sent$county_instrument_type$options, fixed = TRUE),
       any(grepl("available for Employment density only", notifications, fixed = TRUE)))
   })
-  cat("Interface checks passed: common County/MSA controls and defaults, preserved settings, explicit model exceptions, and State/Conley switching.\n")
+  cat("Interface checks passed: common County/MSA controls, geography-only MSA/State CH options, preserved settings, explicit model exceptions, and State/Conley switching.\n")
 })

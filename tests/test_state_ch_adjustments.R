@@ -22,18 +22,18 @@ county <- data.frame(county_id = seq_len(S * C), state_id = state,
   instrument = county_z, schooling = school, college = college, geo = g)
 components <- data.frame(county_id = county$county_id, state_id = state,
   employment = employment, area = area, schooling = school, college = college, geo = g)
+components$region_id <- components$state_id
 state_levels <- as.character(seq_len(S))
-index <- sca_make_index(components, state_levels, "geo", .04, .07, .15, 0)
+index <- sca_make_index(components, state_levels, "geo", .04)
 d <- data.frame(state_id = seq_len(S), LHS = 10 + index(1.09)$value + rnorm(S, sd = .025),
   instrument = as.vector(rowsum(county_z, state, reorder = FALSE)))
-settings <- list(mode = "both", geo_vars = "geo", beta_school = .07,
-  kappa_college = .15, county_fe = TRUE)
+settings <- list(mode = "geography", geo_vars = "geo", county_fe = TRUE)
 
 # The long-form calculation equals the stated CH formula.
 t <- 1.13
 direct <- vapply(seq_len(S), function(s) {
   a <- components[components$state_id == s, ]
-  log(sum(a$employment * exp(.04 * a$geo + .15 * a$college + t * .07 * a$schooling) *
+  log(sum(a$employment * exp(.04 * a$geo) *
     (a$employment / a$area)^(t - 1)) / sum(a$employment))
 }, numeric(1))
 close_enough(index(t)$value, direct)
@@ -41,8 +41,8 @@ h <- 1e-5
 close_enough(index(t)$derivative, (index(t + h)$value - index(t - h)$value) / (2 * h))
 close_enough(index(t)$second_derivative,
   (index(t + h)$derivative - index(t - h)$derivative) / (2 * h))
-index_plus <- sca_make_index(components, state_levels, "geo", .04 + h, .07, .15, 0)
-index_minus <- sca_make_index(components, state_levels, "geo", .04 - h, .07, .15, 0)
+index_plus <- sca_make_index(components, state_levels, "geo", .04 + h)
+index_minus <- sca_make_index(components, state_levels, "geo", .04 - h)
 close_enough(as.vector(index(t)$gamma_derivative),
   (index_plus(t)$value - index_minus(t)$value) / (2 * h))
 close_enough(as.vector(index(t)$mixed_derivative),
@@ -60,12 +60,17 @@ close_enough(fit$state_influence,
   fit$direct_state_influence + fit$calibration_state_influence)
 stopifnot(max(abs(fit$calibration_state_influence)) > 1e-7)
 
-# Changing the common schooling reference affects only the fitted intercept.
-fit_ref <- fit_state_adjusted_ch(d, county, components, modifyList(settings, list(school_reference = 0)))
-close_enough(fit$theta, fit_ref$theta, 1e-7)
-close_enough(fit$covariance[1L, 1L], fit_ref$covariance[1L, 1L], 1e-7)
-close_enough(fit$stock_wright$statistic, fit_ref$stock_wright$statistic, 1e-7)
-close_enough(fit$fitted.values, fit_ref$fitted.values, 1e-7)
+# County schooling and college are inactive, including missing values.
+unused <- county
+unused$schooling <- NA_real_; unused$college <- NA_real_
+unused_parts <- components
+unused_parts$schooling <- NA_real_; unused_parts$college <- NA_real_
+fit_unused <- fit_state_adjusted_ch(d, unused, unused_parts, settings)
+close_enough(fit$full_coefficients, fit_unused$full_coefficients)
+close_enough(fit$full_covariance, fit_unused$full_covariance)
+error <- tryCatch(fit_state_adjusted_ch(d, county, components,
+  modifyList(settings, list(mode = "both"))), error = identity)
+stopifnot(inherits(error, "error"), grepl("geography and transport only", conditionMessage(error)))
 
 # Perturb both stages by the fitted residuals of one shared state. The
 # numerical parameter derivative must equal the joint influence for that state.
@@ -77,14 +82,14 @@ d_perturbed <- d
 d_perturbed$LHS[s] <- d_perturbed$LHS[s] + epsilon * fit$residuals[s]
 fit_perturbed <- fit_state_adjusted_ch(d_perturbed, county_perturbed, components, settings)
 close_enough((fit_perturbed$full_coefficients - fit$full_coefficients) / epsilon,
-  fit$state_influence[s, ], 2e-5)
+  fit$state_influence[as.character(s), ], 2e-5)
 
 # The adjusted-null score has the same shared calibration derivative. At
-# theta=1 the geography and schooling index must still be subtracted.
+# theta=1 the geography index must still be subtracted.
 calibrated_index <- sca_make_index(components, state_levels, "geo",
-  fit$county_calibration$gamma, .07, .15, fit$adjustment$school_reference)
+  fit$county_calibration$gamma)
 perturbed_index <- sca_make_index(components, state_levels, "geo",
-  fit_perturbed$county_calibration$gamma, .07, .15, fit$adjustment$school_reference)
+  fit_perturbed$county_calibration$gamma)
 zr <- d$instrument - mean(d$instrument)
 zr <- zr / sqrt(sum(zr^2))
 null_residual <- d$LHS - calibrated_index(1)$value
@@ -93,7 +98,7 @@ null_y_perturbed <- d$LHS
 null_y_perturbed[s] <- null_y_perturbed[s] + epsilon * null_residual[s]
 q0 <- sum(zr * (d$LHS - calibrated_index(1)$value))
 q0_perturbed <- sum(zr * (null_y_perturbed - perturbed_index(1)$value))
-close_enough((q0_perturbed - q0) / epsilon, fit$stock_wright$score[s], 2e-5)
+close_enough((q0_perturbed - q0) / epsilon, fit$stock_wright$score[match(as.character(s), fit$joint_cluster_levels)], 2e-5)
 close_enough(fit$stock_wright$statistic,
   q0^2 / sum(fit$stock_wright$score^2), 1e-7)
 
@@ -105,16 +110,6 @@ fit_missing <- fit_state_adjusted_ch(d, county, incomplete, settings)
 stopifnot(fit_missing$nobs == S - 1L, !"1" %in% fit_missing$state_ids,
   fit_missing$county_calibration$nobs == (S - 1L) * C,
   fit_missing$excluded_states$state_id == "1")
-hc_settings <- modifyList(settings, list(mode = "human_capital"))
-fit_hc <- fit_state_adjusted_ch(d, county, incomplete, hc_settings)
-stopifnot(fit_hc$nobs == S, length(fit_hc$adjustment$geo_vars) == 0L,
-  all(fit_hc$calibration_state_influence == 0),
-  !fit_hc$county_calibration$calibrated)
-county_unidentified <- county
-county_unidentified$instrument <- 1
-fit_hc_unidentified <- fit_state_adjusted_ch(d, county_unidentified, incomplete, hc_settings)
-close_enough(fit_hc$full_coefficients, fit_hc_unidentified$full_coefficients)
-
 zero_weight <- incomplete
 zero_weight$employment[1L] <- 0
 zero_weight$schooling[1L] <- NA_real_
@@ -141,5 +136,30 @@ d_ols_perturbed$LHS[s] <- d_ols_perturbed$LHS[s] + epsilon * fit_ols$residuals[s
 fit_ols_perturbed <- fit_state_adjusted_ch(d_ols_perturbed, county_ols_perturbed, components,
   modifyList(settings, list(method = "OLS")))
 close_enough((fit_ols_perturbed$full_coefficients - fit_ols$full_coefficients) / epsilon,
-  fit_ols$state_influence[s, ], 3e-4)
+  fit_ols$state_influence[as.character(s), ], 3e-4)
 cat("County-calibrated state CH checks passed.\n")
+
+msa_parts <- components
+msa_parts$region_id <- rep(seq_len(32), each = 6)
+msa_parts$employment <- components$employment
+msa_county <- county
+msa_county$joint_cluster <- paste0("m", msa_parts$region_id)
+# Nonmetro counties in a represented state still belong to the county calibration.
+msa_parts <- msa_parts[msa_parts$region_id != 32, ]
+msa_index <- sca_make_index(msa_parts, as.character(seq_len(31)), "geo", .04)
+msa <- data.frame(region_id = seq_len(31), state_id = rep(seq_len(8), length.out = 31),
+  joint_cluster = paste0("m", seq_len(31)), LHS = 10 + msa_index(1.1)$value + rnorm(31, sd=.01),
+  instrument = as.vector(rowsum(county_z[seq_len(186)], msa_parts$region_id)))
+msa_fit <- fit_state_adjusted_ch(msa, msa_county, msa_parts, modifyList(settings, list(state_fe="state_id")))
+stopifnot(msa_fit$nobs == 31L, msa_fit$county_calibration$nobs == 192L,
+  "m32" %in% msa_fit$joint_cluster_levels,
+  all(msa_fit$direct_state_influence["m32", ] == 0),
+  any(abs(msa_fit$calibration_state_influence["m32", ]) > 0))
+close_enough(msa_fit$full_covariance, crossprod(msa_fit$state_influence))
+msa_incomplete <- msa_parts
+msa_incomplete$geo[1L] <- NA_real_
+msa_missing <- fit_state_adjusted_ch(msa, msa_county, msa_incomplete,
+  modifyList(settings, list(state_fe="state_id")))
+stopifnot(msa_missing$nobs == 30L, !"1" %in% msa_missing$region_ids,
+  msa_missing$county_calibration$nobs == 192L)
+cat("MSA full-constituent-state calibration and shared-cluster checks passed.\n")

@@ -1,5 +1,5 @@
-# County-calibrated productivity shifters enter before the state CH aggregation.
-# Schooling and college coefficients are fixed inputs. Geography is estimated.
+# County geography effects enter before MSA or state CH aggregation.
+# Human capital, when selected, is handled in the aggregate outcome.
 
 sca_design <- function(data, controls = character(), fe = NULL, prefix = ".fe_") {
   if (is.null(fe) || identical(fe, "0")) {
@@ -68,19 +68,14 @@ sca_relevance <- function(response, instrument, W, cluster = NULL, theta = NA_re
        note = "Relevance of the fitted CH derivative, conditional on the fitted parameters; not a weak-instrument test.")
 }
 
-sca_county_fit <- function(county, geo_vars, nuisance, method, beta_school, kappa_college,
-                           school_reference = NULL, county_fe = TRUE) {
-  required <- c("county_id", "state_id", "y", "x", geo_vars, nuisance,
-                if (method == "IV") "instrument", if (beta_school != 0) "schooling",
-                if (kappa_college != 0) "college")
+sca_county_fit <- function(county, geo_vars, nuisance, method, county_fe = TRUE) {
+  required <- c("county_id", "state_id", "joint_cluster", "y", "x", geo_vars, nuisance,
+                if (method == "IV") "instrument")
   county <- county[sca_complete(county, required), , drop = FALSE]
   if (anyDuplicated(as.character(county$county_id))) stop("County calibration contains repeated county identifiers.")
   if (!nrow(county)) stop("No counties have complete inputs for the linked calibration.")
-  if (is.null(school_reference)) school_reference <- if (beta_school != 0) mean(county$schooling) else 0
-  h <- if (beta_school != 0) beta_school * (county$schooling - school_reference) else rep(0, nrow(county))
-  college <- if (kappa_college != 0) kappa_college * county$college else rep(0, nrow(county))
-  y <- county$y - h - college
-  x <- county$x + h
+  y <- county$y
+  x <- county$x
   W <- sca_design(county, unique(c(geo_vars, nuisance)), if (county_fe) "state_id" else NULL)
   X <- cbind(county_elasticity = x, W$X)
   scales <- sqrt(colSums(X^2)); scales[scales == 0] <- 1
@@ -101,7 +96,8 @@ sca_county_fit <- function(county, geo_vars, nuisance, method, beta_school, kapp
   influence <- sweep((Z * residual) %*% t(inverse), 2L, scales, "/")
   colnames(influence) <- names(coefficient)
   state_levels <- sort(unique(as.character(county$state_id)))
-  cluster_influence <- sca_cluster_sum(influence, county$state_id, state_levels)
+  cluster_levels <- sort(unique(as.character(county$joint_cluster)))
+  cluster_influence <- sca_cluster_sum(influence, county$joint_cluster, cluster_levels)
   covariance <- crossprod(cluster_influence)
   gamma <- coefficient[geo_vars]
   gamma_influence <- cluster_influence[, geo_vars, drop = FALSE]
@@ -109,34 +105,30 @@ sca_county_fit <- function(county, geo_vars, nuisance, method, beta_school, kapp
        gamma_influence = gamma_influence, influence = cluster_influence,
        residuals = residual, nobs = nrow(county), states = state_levels,
        county_ids = as.character(county$county_id), method = method,
-       school_reference = school_reference, beta_school = beta_school,
-       kappa_college = kappa_college, geo_vars = geo_vars, nuisance = nuisance,
+       geo_vars = geo_vars, nuisance = nuisance,
+       observation_influence = influence, joint_cluster = county$joint_cluster,
        county_fe = county_fe,
        instrument_relevance = if (method == "IV")
-         sca_relevance(x, county$instrument, W, county$state_id) else NULL)
+         sca_relevance(x, county$instrument, W, county$joint_cluster) else NULL)
 }
 
-sca_make_index <- function(components, state_levels, geo_vars, gamma, beta_school,
-                            kappa_college, school_reference) {
+sca_make_index <- function(components, state_levels, geo_vars, gamma) {
   # Zero-employment counties remain in the membership check, but have no
   # contribution to the index and need no productivity shifter.
   components <- components[components$employment > 0, , drop = FALSE]
-  group <- match(as.character(components$state_id), state_levels)
+  group <- match(as.character(components$region_id), state_levels)
   ordering <- order(group)
   components <- components[ordering, , drop = FALSE]
   group <- group[ordering]
   n <- components$employment; a <- components$area
   positive <- n > 0
   x <- rep(0, length(n)); x[positive] <- log(n[positive] / a[positive])
-  h <- if (beta_school != 0) beta_school * (components$schooling - school_reference) else rep(0, length(n))
-  college <- if (kappa_college != 0) kappa_college * components$college else rep(0, length(n))
   G <- if (length(geo_vars)) as.matrix(components[geo_vars]) else matrix(0, nrow(components), 0L)
   geo <- if (length(geo_vars)) as.vector(G %*% gamma) else rep(0, length(n))
-  base <- rep(-Inf, length(n)); base[positive] <- log(n[positive]) + geo[positive] + college[positive] + h[positive]
-  q <- x + h
+  base <- rep(-Inf, length(n)); base[positive] <- log(n[positive]) + geo[positive]
+  q <- x
   total <- as.vector(rowsum(n, group, reorder = FALSE))
-  if (any(total <= 0) || length(total) != length(state_levels)) stop("A state has no complete positive-employment county components.")
-  # The common schooling reference changes the intercept, not the density estimate.
+  if (any(total <= 0) || length(total) != length(state_levels)) stop("A region has no complete positive-employment county components.")
   function(theta) {
     logw <- base + (theta - 1) * q
     largest <- as.vector(tapply(logw, group, max))
@@ -153,103 +145,84 @@ sca_make_index <- function(components, state_levels, geo_vars, gamma, beta_schoo
   }
 }
 
-sca_s_test <- function(y, z, W, terms, gamma_influence, state_levels) {
+sca_s_test <- function(y, z, W, terms, gamma_influence, cluster, cluster_levels) {
   zr <- qr.resid(W$qr, z)
   residual <- qr.resid(W$qr, y - terms$value)
   moment <- sum(zr * residual)
   derivative <- -as.vector(crossprod(zr, terms$gamma_derivative))
-  score <- zr * residual
+  score <- as.vector(sca_cluster_sum(zr * residual, cluster, cluster_levels))
   if (length(derivative)) score <- score + as.vector(gamma_influence %*% derivative)
   variance <- sum(score^2)
   available <- is.finite(variance) && variance > 1e-25 && sum(zr^2) > 1e-20
   statistic <- if (available) moment^2 / variance else NA_real_
   list(statistic = statistic, p_value = if (available) pchisq(statistic, 1L, lower.tail = FALSE) else NA_real_,
-       df = 1L, null_elasticity = 0, nobs = length(y), clusters = length(state_levels),
+       df = 1L, null_elasticity = 0, nobs = length(y), clusters = length(cluster_levels),
        status = if (available) "available" else "unavailable",
        reason = if (available) "" else "The adjusted null has no estimable moment variance.",
        calibration_uncertainty = ncol(gamma_influence) > 0L, moment = moment, score = score,
        note = if (ncol(gamma_influence) > 0L)
          "Adjusted-null S test includes the county geography calibration; validity also requires a regularly identified county calibration." else
-         "The adjusted-null S test subtracts the human-capital index at theta = 1 and conditions on the fixed schooling and college coefficients.")
+         "The zero-elasticity S test uses the geography-adjusted index at theta = 1.")
 }
 
 fit_state_adjusted_ch <- function(data, county, components, settings = list()) {
   defaults <- list(dep_var = "LHS", method = "IV", mode = "geography", geo_vars = character(),
-    beta_school = 0, kappa_college = 0, school_reference = NULL, county_fe = TRUE,
-    county_controls = character(), state_controls = character(), state_fe = "0",
+    county_fe = TRUE, county_controls = character(), state_controls = character(), state_fe = "0",
     se_spec = "cluster_state", county_instrument_label = "Area-weighted historical population")
   for (name in names(defaults)) if (is.null(settings[[name]])) settings[[name]] <- defaults[[name]]
   method <- match.arg(settings$method, c("IV", "OLS"))
-  mode <- match.arg(settings$mode, c("geography", "human_capital", "both"))
-  geo_vars <- if (mode %in% c("geography", "both")) unique(settings$geo_vars) else character()
-  beta_school <- if (mode %in% c("human_capital", "both")) settings$beta_school else 0
-  kappa_college <- if (mode %in% c("human_capital", "both")) settings$kappa_college else 0
-  if (!is.numeric(beta_school) || length(beta_school) != 1L || !is.finite(beta_school) ||
-      !is.numeric(kappa_college) || length(kappa_college) != 1L || !is.finite(kappa_college))
-    stop("The common schooling and college coefficients must be finite fixed numbers.")
-  if (mode %in% c("geography", "both") && !length(geo_vars)) stop("Select at least one geography control for the county-calibrated geography adjustment.")
-  if (mode == "human_capital" && beta_school == 0 && kappa_college == 0)
-    stop("Select schooling or a nonzero college effect for the human-capital adjustment.")
-  if (anyDuplicated(as.character(data$state_id))) stop("State CH estimation requires one row per state.")
-  if (anyDuplicated(paste(components$state_id, components$county_id, sep = ":")))
-    stop("State CH components contain repeated county identifiers within a state.")
-  required <- c(settings$dep_var, "state_id", settings$state_controls,
+  if (!identical(settings$mode, "geography")) stop("County-adjusted CH supports geography and transport only. Apply human capital at the MSA outcome level.")
+  mode <- "geography"
+  geo_vars <- unique(settings$geo_vars)
+  if (!length(geo_vars)) stop("Select at least one geography or transport control for the county adjustment.")
+  if (!"region_id" %in% names(data)) data$region_id <- data$state_id
+  if (!"region_id" %in% names(components)) components$region_id <- components$state_id
+  if (!"joint_cluster" %in% names(data)) data$joint_cluster <- data$state_id
+  if (!"joint_cluster" %in% names(county)) county$joint_cluster <- county$state_id
+  if (anyDuplicated(as.character(data$region_id))) stop("CH estimation requires one row per region.")
+  if (anyDuplicated(paste(components$region_id, components$county_id, sep = ":")))
+    stop("CH components contain repeated county identifiers within a region.")
+  required <- c(settings$dep_var, "region_id", "joint_cluster", settings$state_controls,
     if (settings$state_fe != "0") settings$state_fe, if (method == "IV") "instrument")
   valid <- sca_complete(data, required)
   if ("ch_complete" %in% names(data)) valid <- valid & !is.na(data$ch_complete) & data$ch_complete == 1
-  component_required <- c("state_id", "county_id", "employment", "area")
-  shifter_required <- c(geo_vars, if (beta_school != 0) "schooling", if (kappa_college != 0) "college")
-  complete_component <- sca_complete(components, component_required) &
+  complete_component <- sca_complete(components, c("region_id", "state_id", "county_id", "employment", "area")) &
     components$employment >= 0 & components$area > 0 &
-    (components$employment == 0 | sca_complete(components, shifter_required))
-  bad_states <- unique(as.character(components$state_id[!complete_component]))
-  available_states <- unique(as.character(components$state_id))
-  valid <- valid & as.character(data$state_id) %in% setdiff(available_states, bad_states)
+    (components$employment == 0 | sca_complete(components, geo_vars))
+  bad_states <- unique(as.character(components$region_id[!complete_component]))
+  available_states <- unique(as.character(components$region_id))
+  valid <- valid & as.character(data$region_id) %in% setdiff(available_states, bad_states)
   valid[is.na(valid)] <- FALSE
   rows <- which(valid)
   d <- data[rows, , drop = FALSE]
-  if (nrow(d) < 3L) stop("Fewer than three states have complete components and all selected adjustment inputs.")
-  state_levels <- as.character(d$state_id)
-  components <- components[as.character(components$state_id) %in% state_levels, , drop = FALSE]
-  county <- county[as.character(county$state_id) %in% state_levels, , drop = FALSE]
-  if (length(geo_vars)) {
-    calibration <- sca_county_fit(county, geo_vars, settings$county_controls, method,
-      beta_school, kappa_college, settings$school_reference, isTRUE(settings$county_fe))
-  } else {
-    # With only externally supplied human-capital coefficients there is no
-    # county parameter to estimate. County IV identification is unnecessary.
-    school_reference <- settings$school_reference
-    if (is.null(school_reference)) school_reference <- if (beta_school != 0)
-      mean(components$schooling[components$employment > 0]) else 0
-    calibration <- list(calibrated = FALSE, coefficients = numeric(),
-      covariance = matrix(0, 0L, 0L), gamma = numeric(),
-      gamma_influence = matrix(0, 0L, 0L), influence = matrix(0, 0L, 0L),
-      nobs = 0L, states = character(), county_ids = character(), method = NULL,
-      school_reference = school_reference, beta_school = beta_school,
-      kappa_college = kappa_college, geo_vars = character(), nuisance = character(),
-      county_fe = FALSE, instrument_relevance = NULL,
-      note = "Human-capital coefficients are fixed; no county regression is required. The common schooling reference is calculated from positive-employment components.")
-  }
-  gamma_influence <- matrix(0, nrow(d), length(geo_vars), dimnames = list(state_levels, geo_vars))
-  if (length(geo_vars)) gamma_influence[match(rownames(calibration$gamma_influence), state_levels), ] <- calibration$gamma_influence
-  index <- sca_make_index(components, state_levels, geo_vars, calibration$gamma,
-    beta_school, kappa_college, calibration$school_reference)
+  if (nrow(d) < 3L) stop("Fewer than three regions have complete components and selected adjustment inputs.")
+  state_levels <- as.character(d$region_id)
+  components <- components[as.character(components$region_id) %in% state_levels, , drop = FALSE]
+  # All constituent states contribute calibration counties, including nonmetro counties.
+  county <- county[as.character(county$state_id) %in% unique(as.character(components$state_id)), , drop = FALSE]
+  calibration <- sca_county_fit(county, geo_vars, settings$county_controls, method, isTRUE(settings$county_fe))
+  cluster_levels <- sort(unique(c(as.character(d$joint_cluster), rownames(calibration$gamma_influence))))
+  if (length(unique(d$joint_cluster)) < 3L)
+    stop("Fewer than three independent aggregate clusters remain. Choose a wider sample or a different clustering specification.")
+  gamma_influence <- matrix(0, length(cluster_levels), length(geo_vars), dimnames = list(cluster_levels, geo_vars))
+  gamma_influence[match(rownames(calibration$gamma_influence), cluster_levels), ] <- calibration$gamma_influence
+  index <- sca_make_index(components, state_levels, geo_vars, calibration$gamma)
   W <- sca_design(d, settings$state_controls, if (settings$state_fe == "0") NULL else settings$state_fe)
   y <- d[[settings$dep_var]]
   n <- length(y); k <- ncol(W$X) + 1L
-  if (n <= k) stop("Too few states remain after the selected state controls or fixed effects.")
+  if (n <= k) stop("Too few regions remain after aggregate controls or fixed effects.")
   partial <- function(v) qr.resid(W$qr, v)
   yr <- partial(y)
   zr <- NULL
   stock_wright <- NULL
   if (method == "IV") {
     zscale <- max(abs(d$instrument))
-    if (!is.finite(zscale) || zscale == 0) stop("The historical state instrument has no variation.")
+    if (!is.finite(zscale) || zscale == 0) stop("The historical aggregate instrument has no variation.")
     z <- d$instrument / zscale
     zr <- partial(z)
-    if (sqrt(sum(zr^2)) <= 1e-10 * sqrt(sum(z^2))) stop("The state instrument has no variation after the selected controls.")
+    if (sqrt(sum(zr^2)) <= 1e-10 * sqrt(sum(z^2))) stop("The aggregate instrument has no variation after the selected controls.")
     zr <- zr / sqrt(sum(zr^2))
-    stock_wright <- sca_s_test(y, zr, W, index(1), gamma_influence, state_levels)
+    stock_wright <- sca_s_test(y, zr, W, index(1), gamma_influence, d$joint_cluster, cluster_levels)
   }
   fail <- function(message) stop(errorCondition(message, class = "ch_fit_error", stock_wright = stock_wright))
   objective <- function(theta) sum((yr - partial(index(theta)$value))^2)
@@ -282,7 +255,7 @@ fit_state_adjusted_ch <- function(data, county, components, settings = list()) {
   J <- cbind(ch_elasticity = terms$derivative, W$X)
   scales <- sqrt(colSums(J^2)); scales[scales == 0] <- 1
   Js <- sweep(J, 2L, scales, "/")
-  if (qr(Js, tol = 1e-10)$rank != k) fail("The adjusted CH elasticity is not identified separately from the selected state controls.")
+  if (qr(Js, tol = 1e-10)$rank != k) fail("The adjusted CH elasticity is not identified separately from the selected aggregate controls.")
   if (method == "IV") {
     Z <- cbind(zr, W$Xs)
     bread <- crossprod(Z, Js)
@@ -298,39 +271,36 @@ fit_state_adjusted_ch <- function(data, county, components, settings = list()) {
   }
   if (rcond(bread) < 1e-12) fail("The adjusted CH derivative is too weak for a reliable Wald covariance matrix.")
   inverse <- solve(bread)
-  direct_influence <- sweep(scores %*% t(inverse), 2L, scales, "/")
+  direct_influence <- sca_cluster_sum(sweep(scores %*% t(inverse), 2L, scales, "/"), d$joint_cluster, cluster_levels)
   calibration_influence <- if (length(geo_vars))
-    sweep((-gamma_influence %*% t(gamma_bread)) %*% t(inverse), 2L, scales, "/") else matrix(0, n, k)
+    sweep((-gamma_influence %*% t(gamma_bread)) %*% t(inverse), 2L, scales, "/") else matrix(0, length(cluster_levels), k)
   influence <- direct_influence + calibration_influence
   colnames(influence) <- colnames(J)
   full_vcov <- crossprod(influence)
   dimnames(full_vcov) <- list(colnames(J), colnames(J))
   full_coef <- c(ch_elasticity = theta - 1, beta)
   exposed <- !startsWith(names(full_coef), ".fe_")
-  instrument_relevance <- if (method == "IV") sca_relevance(terms$derivative, d$instrument, W, d$state_id, theta) else NULL
-  excluded <- data.frame(state_id = as.character(data$state_id[!valid]),
-    reason = ifelse(as.character(data$state_id[!valid]) %in% bad_states,
+  instrument_relevance <- if (method == "IV") sca_relevance(terms$derivative, d$instrument, W, d$joint_cluster, theta) else NULL
+  excluded <- data.frame(state_id = as.character(data$region_id[!valid]),
+    reason = ifelse(as.character(data$region_id[!valid]) %in% bad_states,
       "At least one county component is missing a selected adjustment input.",
-      ifelse(!as.character(data$state_id[!valid]) %in% available_states,
-        "Complete county components are unavailable.", "The state outcome, instrument or selected state controls are missing.")), stringsAsFactors = FALSE)
+      ifelse(!as.character(data$region_id[!valid]) %in% available_states,
+        "Complete county components are unavailable.", "The aggregate outcome, instrument or selected aggregate controls are missing.")), stringsAsFactors = FALSE)
   result <- list(coefficients = full_coef[exposed], covariance = full_vcov[exposed, exposed, drop = FALSE],
     theta = theta, residuals = residual, fitted.values = fitted, rows = rows,
     nobs = as.integer(n), df.residual = Inf, parameter_count = k, method = method,
-    se_spec = "cluster_state", clusters = as.integer(n), collin.var = character(), singleton_n = 0L,
+    se_spec = settings$se_spec, clusters = as.integer(length(unique(d$joint_cluster))), collin.var = character(), singleton_n = 0L,
     stock_wright = stock_wright, anderson_rubin = NULL, instrument_relevance = instrument_relevance,
-    inference = if (length(geo_vars))
-      "Shared-state CR0 covariance propagates the county geography calibration and the covariance between both stages; asymptotic normal inference. Schooling and college coefficients are fixed." else
-      "State CR0 covariance with asymptotic normal inference. Schooling and college coefficients are fixed; no county calibration is required.",
+    inference = "Joint CR0 covariance includes county geography estimation and shared county/aggregate observations; asymptotic normal inference. Human capital, when selected, adjusts only the aggregate outcome.",
     full_coefficients = full_coef, full_covariance = full_vcov,
     index_value = terms$value, index_derivative = terms$derivative,
     objective = sum(residual^2), iv_moment = if (method == "IV") moment(theta) else NULL,
     county_calibration = calibration, excluded_states = excluded,
-    adjustment = list(mode = mode, geo_vars = geo_vars, beta_school = beta_school,
-      kappa_college = kappa_college, school_reference = calibration$school_reference,
+    adjustment = list(mode = mode, geo_vars = geo_vars,
       county_instrument_label = settings$county_instrument_label,
       county_controls_not_aggregated = calibration$nuisance,
       county_fe_not_aggregated = calibration$county_fe),
-    state_ids = state_levels, state_influence = influence,
+    state_ids = state_levels, region_ids = state_levels, joint_cluster_levels = cluster_levels, state_influence = influence,
     direct_state_influence = direct_influence, calibration_state_influence = calibration_influence,
     index_gamma_derivative = terms$gamma_derivative, null_index_value = index(1)$value,
     roots = roots)

@@ -279,11 +279,8 @@ labeledInput <- function(inputId, labelText, inputUI, helpId, helpText) {
   div(
     class = "labeled-input-container",
     tags$label(labelText, `for` = inputId, class = "control-label"),
-    div(class = "input-button-row", inputUI, actionButton(helpId, NULL, icon = icon("question-circle"), class = "help-btn")),
-    conditionalPanel(
-      condition = glue("input.{helpId} % 2 == 1"),
-      div(class = "help-text", helpText)
-    )
+    div(class = "input-button-row", inputUI, pdf_help_button(helpId,
+      if (is.character(labelText)) paste(labelText, collapse = " ") else gsub("_", " ", inputId)))
   )
 }
 
@@ -318,8 +315,7 @@ geography_settings_ui <- function(level) {
   checkbox <- function(name, label, help) tagList(
     div(class = "input-button-row", style = "margin-bottom:15px;",
       checkboxInput(id(name), label, value = defaults[[name]]),
-      actionButton(paste0("help_", id(name)), NULL, icon = icon("question-circle"), class = "help-btn")),
-    conditionalPanel(paste0("input.help_", id(name), " % 2 == 1"), div(class = "help-text", help)))
+      pdf_help_button(paste0("help_", id(name)), label)))
   overlap_id <- id(if (level == "MSA") "overlap_pct" else "overlap_threshold")
   overlap_condition <- if (level == "MSA") "input.msa_instrument_type == 'overlap'" else
     "input.county_instrument_type == 'max_density_overlap' || input.county_instrument_type == 'weighted_density_overlap'"
@@ -328,7 +324,8 @@ geography_settings_ui <- function(level) {
   tagList(
     h4("4. Geographic Unit Settings"),
     conditionalPanel("input.approach != 'employment'",
-      selectInput(id("density_measure"), "Density measure:", density_choices, "average"),
+      field("density_measure", "Density measure:",
+        selectInput(id("density_measure"), NULL, density_choices, "average"), help_state_ch),
       if (level == "County") p(class = "help-block", "With one county per observation, the Ciccone–Hall model reduces to the regression using log county employment density.")),
     if (level == "MSA") conditionalPanel("input.approach != 'employment' && input.msa_density_measure == 'CH'",
       p(class = "help-block", "Uses employment density within each MSA's counties. OLS uses nonlinear least squares; IV uses GMM. State fixed effects and controls remain available. A separate first-stage regression and Conley standard errors are not implemented for this model."),
@@ -360,8 +357,7 @@ geography_settings_ui <- function(level) {
     if (level == "County") tagList(
       div(class = "input-button-row", style = "margin-bottom:15px;",
         checkboxInput("county_msa_restriction", "Restrict to counties in an MSA", value = FALSE),
-        actionButton("help_county_msa_restriction", NULL, icon = icon("question-circle"), class = "help-btn")),
-      conditionalPanel("input.help_county_msa_restriction % 2 == 1", div(class = "help-text", help_county_msa_restriction)))
+        pdf_help_button("help_county_msa_restriction", "Restrict to counties in an MSA")))
   )
 }
 
@@ -1128,6 +1124,7 @@ result_plot <- function(details) {
                     plot.background = ggplot2::element_rect(fill = "white", color = NA))
 }
 
+source("pdf_help.R", local = TRUE)
 source("state_ch_adjustments.R", local = TRUE)
 source("state_ch_adjustment_interface.R", local = TRUE)
 
@@ -1150,8 +1147,16 @@ ui <- fluidPage(title = "Agglomeration Effects USA",
     .labeled-input-container .shiny-options-group{padding-top:5px}
     .help-btn{background:none;border:none;color:#007BFF;font-size:20px;padding:0 5px;cursor:pointer;align-self:center;line-height:1;transition:color .2s ease,transform .2s ease}
     .help-btn:hover{color:#0056b3;transform:scale(1.1)}
-    .help-btn:focus{outline:none;box-shadow:none}
+    .help-btn:focus-visible{outline:2px solid #007BFF;outline-offset:2px}
     .help-text{background-color:#f8f9fa;border-left:4px solid #007BFF;padding:10px 15px;margin-top:8px;font-size:13px;color:#495057;border-radius:0 4px 4px 0}
+    .pdf-help-modal{color:#111}
+    .pdf-help-modal .shiny-input-container{width:100%;margin-bottom:10px}
+    .pdf-help-title{margin-top:0;font-family:'Times New Roman',serif}
+    .pdf-help-links{display:flex;gap:20px;margin-bottom:10px}
+    .pdf-help-document{display:block;width:100%;height:65vh;min-height:300px;border:1px solid #ddd;background:white}
+    .pdf-help-image-frame{max-height:65vh;overflow:auto;border:1px solid #ddd;background:white}
+    .pdf-help-image{display:block;width:100%;height:auto}
+    @media(max-width:767px){.pdf-help-document,.pdf-help-image-frame{height:60vh;max-height:60vh}.pdf-help-title{font-size:17px}}
     #instrument_map_render img{max-width:100%;height:auto;border:1px solid #ddd;border-radius:4px}
     
 
@@ -1321,7 +1326,7 @@ ui <- fluidPage(title = "Agglomeration Effects USA",
                  hr(),
                  
                  # Display options
-                 h4("Display Options"),
+                 h4("Display Options ", pdf_help_button("help_display_options", "Display options and running an analysis")),
                  checkboxInput("show_map", "Display Instrument Map", value = TRUE),
                  checkboxInput("show_coefficient_chart", "Display Coefficient Chart", value = FALSE),
                  conditionalPanel("input.show_map == true", sliderInput("map_size", "Map Size:", min = 25, max = 200, value = 75, post = "%")),
@@ -1348,8 +1353,7 @@ ui <- fluidPage(title = "Agglomeration Effects USA",
                  h4("3. Fixed Effects & Sample Scope"),
                  div(class="input-button-row", style="margin-bottom:10px;",
                      checkboxInput("use_fe", "Use State Fixed Effects", value = TRUE),
-                     actionButton("help_use_fe", NULL, icon = icon("question-circle"), class = "help-btn")),
-                 conditionalPanel("input.help_use_fe % 2 == 1", div(class="help-text", help_use_fe)),
+                     pdf_help_button("help_use_fe", "State fixed effects")),
                  conditionalPanel("input.use_fe == true",
                                   labeledInput("fe_type", "Fixed Effects Type:",
                                                selectInput("fe_type", NULL, c("Historical"="historical", "Modern"="modern"), "historical"),
@@ -1405,7 +1409,8 @@ ui <- fluidPage(title = "Agglomeration Effects USA",
     
     # Results
     mainPanel(
-      h3(textOutput("results_header")),
+      div(class = "input-button-row", h3(textOutput("results_header")),
+        pdf_help_button("help_reading_results", "Regression results and diagnostics")),
       uiOutput("sample_note"),
       hr(),
       withSpinner(htmlOutput("results_table"), type = 6, color = "black"),
@@ -1413,6 +1418,7 @@ ui <- fluidPage(title = "Agglomeration Effects USA",
         div(class = "download-row",
           downloadButton("download_coefficients", "Coefficients (CSV)"),
           downloadButton("download_results", "Results (HTML)"),
+          pdf_help_button("help_downloads", "Saving an analysis"),
           conditionalPanel("(input.analysis_level == 'State' && input.state_ch_mode == 'county_adjusted') || (input.analysis_level == 'MSA' && input.approach != 'employment' && input.msa_density_measure == 'CH' && input.msa_ch_mode == 'county_adjusted')",
             downloadButton("download_county_calibration", "County calibration (CSV)")),
           conditionalPanel("input.show_coefficient_chart == true", downloadButton("download_plot", "Chart (PNG)"))
@@ -1512,6 +1518,7 @@ state_ch_result <- function(input, data) {
 }
 
 server <- function(input, output, session) {
+  pdf_help_server(input, output, session)
   
   analysis_output <- reactiveVal(NULL)
   map_output <- reactiveVal(NULL)

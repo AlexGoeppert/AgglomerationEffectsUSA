@@ -5,6 +5,7 @@ if (.Platform$OS.type == "windows") invisible(Sys.setlocale("LC_CTYPE", "English
 options(encoding = "UTF-8")
 local({
   app <- new.env(parent = globalenv())
+  source("pdf_help.R", local = app, encoding = "UTF-8")
   for (expr in parse("app.R", encoding = "UTF-8")) {
     if (!is.call(expr) || !identical(expr[[1]], as.name("<-"))) next
     name <- as.character(expr[[2]])

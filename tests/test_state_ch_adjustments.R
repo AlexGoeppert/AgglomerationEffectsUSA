@@ -68,9 +68,13 @@ unused_parts$schooling <- NA_real_; unused_parts$college <- NA_real_
 fit_unused <- fit_state_adjusted_ch(d, unused, unused_parts, settings)
 close_enough(fit$full_coefficients, fit_unused$full_coefficients)
 close_enough(fit$full_covariance, fit_unused$full_covariance)
-error <- tryCatch(fit_state_adjusted_ch(d, county, components,
-  modifyList(settings, list(mode = "both"))), error = identity)
-stopifnot(inherits(error, "error"), grepl("geography and transport only", conditionMessage(error)))
+
+# Setting both human-capital coefficients to zero recovers geography alone,
+# even when the unused education inputs are absent.
+both_zero <- fit_state_adjusted_ch(d, unused, unused_parts,
+  modifyList(settings, list(mode = "both", beta_school = 0, kappa_college = 0)))
+close_enough(fit$full_coefficients, both_zero$full_coefficients)
+close_enough(fit$full_covariance, both_zero$full_covariance)
 
 # Perturb both stages by the fitted residuals of one shared state. The
 # numerical parameter derivative must equal the joint influence for that state.
@@ -163,3 +167,121 @@ msa_missing <- fit_state_adjusted_ch(msa, msa_county, msa_incomplete,
 stopifnot(msa_missing$nobs == 30L, !"1" %in% msa_missing$region_ids,
   msa_missing$county_calibration$nobs == 192L)
 cat("MSA full-constituent-state calibration and shared-cluster checks passed.\n")
+
+# Human capital belongs inside the county sum in the additional mode. The
+# derivative includes effective-employment density, log(d) + h.
+both_settings <- modifyList(settings, list(mode = "both", beta_school = .07,
+  kappa_college = .15, schooling_reference = 0))
+both_index <- sca_make_index(components, state_levels, "geo", .04,
+  mode = "both", beta_school = .07, kappa_college = .15)
+both_direct <- vapply(seq_len(S), function(s) {
+  a <- components[components$state_id == s, ]
+  log(sum(a$employment * exp(.04 * a$geo + .15 * a$college + t * .07 * a$schooling) *
+    (a$employment / a$area)^(t - 1)) / sum(a$employment))
+}, numeric(1))
+close_enough(both_index(t)$value, both_direct)
+close_enough(both_index(t)$derivative,
+  (both_index(t + h)$value - both_index(t - h)$value) / (2 * h))
+close_enough(both_index(t)$second_derivative,
+  (both_index(t + h)$derivative - both_index(t - h)$derivative) / (2 * h))
+both_plus <- sca_make_index(components, state_levels, "geo", .04 + h, "both", .07, .15)
+both_minus <- sca_make_index(components, state_levels, "geo", .04 - h, "both", .07, .15)
+close_enough(as.vector(both_index(t)$gamma_derivative),
+  (both_plus(t)$value - both_minus(t)$value) / (2 * h))
+close_enough(as.vector(both_index(t)$mixed_derivative),
+  (both_plus(t)$derivative - both_minus(t)$derivative) / (2 * h))
+
+both_d <- d
+both_d$LHS <- 10 + both_index(1.09)$value + rnorm(S, sd = .025)
+both_fit <- fit_state_adjusted_ch(both_d, county, components, both_settings)
+stopifnot(both_fit$nobs == S, both_fit$adjustment$mode == "both",
+  both_fit$adjustment$beta_school == .07, both_fit$adjustment$kappa_college == .15,
+  abs(both_fit$iv_moment) < 1e-8,
+  both_fit$stock_wright$status == "available",
+  abs(both_fit$county_calibration$gamma - fit$county_calibration$gamma) > 1e-5)
+
+# The county calibration must be refitted with its adjusted outcome and
+# effective-employment density, rather than reusing geography-only estimates.
+manual_county <- county
+manual_county$joint_cluster <- manual_county$state_id
+manual_county$y <- county$y - .07 * county$schooling - .15 * county$college
+manual_county$x <- county$x + .07 * county$schooling
+manual_calibration <- sca_county_fit(manual_county, "geo", character(), "IV", TRUE)
+close_enough(both_fit$county_calibration$coefficients, manual_calibration$coefficients)
+close_enough(both_fit$county_calibration$covariance, manual_calibration$covariance)
+close_enough(both_fit$full_covariance, crossprod(both_fit$state_influence))
+
+# Changing the common schooling reference changes only the aggregate intercept.
+centered_fit <- fit_state_adjusted_ch(both_d, county, components,
+  modifyList(both_settings, list(schooling_reference = 12)))
+close_enough(both_fit$theta, centered_fit$theta)
+close_enough(both_fit$county_calibration$gamma, centered_fit$county_calibration$gamma)
+close_enough(both_fit$covariance["ch_elasticity", "ch_elasticity"],
+  centered_fit$covariance["ch_elasticity", "ch_elasticity"])
+close_enough(centered_fit$full_coefficients["(Intercept)"],
+  both_fit$full_coefficients["(Intercept)"] + both_fit$theta * .07 * 12)
+
+# Missing schooling or college in one positive-employment county removes its
+# whole region only from the combined model. Zero-employment counties need no HC.
+for (variable in c("schooling", "college")) {
+  missing_hc <- components
+  missing_hc[[variable]][1] <- NA_real_
+  hc_missing_fit <- fit_state_adjusted_ch(both_d, county, missing_hc, both_settings)
+  stopifnot(hc_missing_fit$nobs == S - 1L, !"1" %in% hc_missing_fit$region_ids)
+  missing_hc$employment[1] <- 0
+  hc_zero_fit <- fit_state_adjusted_ch(both_d, county, missing_hc, both_settings)
+  stopifnot(hc_zero_fit$nobs == S)
+}
+missing_county_hc <- county
+missing_county_hc$schooling[1] <- NA_real_
+calibration_missing <- fit_state_adjusted_ch(both_d, missing_county_hc, components, both_settings)
+stopifnot(calibration_missing$nobs == S, calibration_missing$county_calibration$nobs == S * C - 1L)
+
+# Joint uncertainty must retain the county calibration effect in both IV and
+# nonlinear least squares. Perturb one shared cluster in both regressions.
+for (method in c("IV", "OLS")) {
+  current_settings <- modifyList(both_settings, list(method = method))
+  current_fit <- fit_state_adjusted_ch(both_d, county, components, current_settings)
+  altered_county <- county
+  altered_county$y[state == s] <- county$y[state == s] +
+    epsilon * current_fit$county_calibration$residuals[state == s]
+  altered_data <- both_d
+  altered_data$LHS[s] <- both_d$LHS[s] + epsilon * current_fit$residuals[s]
+  altered_fit <- fit_state_adjusted_ch(altered_data, altered_county, components, current_settings)
+  close_enough((altered_fit$full_coefficients - current_fit$full_coefficients) / epsilon,
+    current_fit$state_influence[as.character(s), ], if (method == "IV") 2e-5 else 3e-4)
+  if (method == "IV") {
+    null_index <- sca_make_index(components, state_levels, "geo", current_fit$county_calibration$gamma,
+      "both", .07, .15)
+    changed_null_index <- sca_make_index(components, state_levels, "geo", altered_fit$county_calibration$gamma,
+      "both", .07, .15)
+    null_y <- both_d$LHS
+    null_residual <- null_y - null_index(1)$value
+    null_residual <- null_residual - mean(null_residual)
+    null_y[s] <- null_y[s] + epsilon * null_residual[s]
+    original_moment <- sum(zr * (both_d$LHS - null_index(1)$value))
+    changed_moment <- sum(zr * (null_y - changed_null_index(1)$value))
+    close_enough((changed_moment - original_moment) / epsilon,
+      current_fit$stock_wright$score[match(as.character(s), current_fit$joint_cluster_levels)], 2e-5)
+    close_enough(current_fit$stock_wright$statistic,
+      original_moment^2 / sum(current_fit$stock_wright$score^2))
+  }
+}
+
+# The same combined calculation works with MSA fixed effects, cross-state
+# membership, and calibration counties outside the retained MSAs.
+msa_both_index <- sca_make_index(msa_parts, as.character(seq_len(31)), "geo", .04, "both", .07, .15)
+msa_both_data <- msa
+msa_both_data$LHS <- 10 + msa_both_index(1.1)$value + rnorm(31, sd = .01)
+msa_both_settings <- modifyList(both_settings, list(state_fe = "state_id"))
+msa_both_fit <- fit_state_adjusted_ch(msa_both_data, msa_county, msa_parts, msa_both_settings)
+stopifnot(msa_both_fit$nobs == 31L, msa_both_fit$county_calibration$nobs == 192L,
+  "m32" %in% msa_both_fit$joint_cluster_levels,
+  all(msa_both_fit$direct_state_influence["m32", ] == 0),
+  any(abs(msa_both_fit$calibration_state_influence["m32", ]) > 0))
+close_enough(msa_both_fit$full_covariance, crossprod(msa_both_fit$state_influence))
+msa_both_missing <- msa_parts
+msa_both_missing$college[1] <- NA_real_
+msa_both_missing_fit <- fit_state_adjusted_ch(msa_both_data, msa_county, msa_both_missing, msa_both_settings)
+stopifnot(msa_both_missing_fit$nobs == 30L, !"1" %in% msa_both_missing_fit$region_ids)
+cat("Combined county geography, schooling and college CH checks passed.\n")

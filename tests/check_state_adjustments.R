@@ -1,4 +1,4 @@
-# Integration checks use annual cached inputs and keep schooling at the MSA outcome.
+# Integration checks use annual cached inputs for both county-adjusted CH tabs.
 repo <- normalizePath(Sys.getenv("APP_REPO", unset="."), mustWork=TRUE)
 work <- Sys.getenv("APP_TEST_OUTPUT", unset=tempdir())
 dir.create(work,recursive=TRUE,showWarnings=FALSE)
@@ -31,12 +31,12 @@ check <- function(result) {
   for(name in names(result$models)) {
     m <- result$models[[name]]
     stopifnot(inherits(m,"ch_model"),all(is.finite(coef(m))),all(is.finite(vcov(m))),
-      m$county_calibration$calibrated,m$adjustment_mode=="geography",m$county_calibration$county_fe,
+      m$county_calibration$calibrated,m$adjustment_mode %in% c("geography","both"),m$county_calibration$county_fe,
       is.null(m$anderson_rubin),!any(c("schooling","college") %in% names(m$county_calibration$coefficients)),
       isTRUE(all.equal(unname(m$full_covariance),unname(crossprod(m$state_influence)),tolerance=1e-10)))
     if(result$analysis_type=="IV") stopifnot(m$stock_wright$status=="available",m$instrument_relevance$status=="available",abs(m$iv_moment)<1e-7)
     records[[length(records)+1L]] <<- data.frame(level=result$analysis_level,year=result$year_modern,
-      model=name,method=result$analysis_type,n=nobs(m),county_n=m$county_calibration$nobs,
+      model=name,adjustment=m$adjustment_mode,method=result$analysis_type,n=nobs(m),county_n=m$county_calibration$nobs,
       elasticity=coef(m)[["ch_elasticity"]],se=sqrt(vcov(m)[1,1]))
   }
 }
@@ -53,12 +53,21 @@ check(app$state_ch_result(modifyList(settings,list(state_instrument_type="histor
 check(app$state_ch_result(modifyList(settings,list(sample_scope="states_only")),app$state_data))
 after <- app$state_ch_result(standard,app$state_data)$models[[1]]
 stopifnot(identical(before$coefficients,after$coefficients),identical(before$covariance,after$covariance))
+combined_state <- app$state_ch_result(modifyList(settings,list(state_adjustment_mode="both")),app$state_data)
+check(combined_state)
+stopifnot(combined_state$adjustment_mode=="both",combined_state$schooling_adj==0L,!combined_state$apply_college_adj,
+  combined_state$models[[1]]$adjustment$beta_school>0,
+  combined_state$models[[1]]$adjustment$kappa_college==.75,
+  combined_state$models[[1]]$adjustment$schooling_reference==0,
+  max(abs(combined_state$models[[1]]$county_calibration$gamma-baseline$models[[1]]$county_calibration$gamma))>1e-6)
 original_static <- app$get_state_adjustment_inputs
 static <- as.data.frame(original_static())
 static$avg_schooling_10_14 <- static$college_share <- NA_real_
 app$get_state_adjustment_inputs <- function(...) static
 no_hc <- app$state_ch_result(settings,app$state_data)
 stopifnot(identical(baseline$models[[1]]$coefficients,no_hc$models[[1]]$coefficients))
+missing_hc <- tryCatch(app$state_ch_result(modifyList(settings,list(state_adjustment_mode="both")),app$state_data),error=identity)
+stopifnot(inherits(missing_hc,"error"))
 selected <- baseline$models[[1]]$state_ids[1]
 static$rugged_mean[which(static$statefips==as.numeric(selected))[1]] <- NA_real_
 missing <- app$state_ch_result(settings,app$state_data)
@@ -66,7 +75,7 @@ stopifnot(nobs(missing$models[[1]])==nobs(baseline$models[[1]])-1,!selected %in%
 app$get_state_adjustment_inputs <- original_static
 ui <- htmltools::renderTags(app$ui)$html
 stopifnot(grepl('id="state_ch_mode"',ui,fixed=TRUE),grepl('id="msa_ch_mode"',ui,fixed=TRUE),
-  !grepl('id="state_adjustment_type"',ui,fixed=TRUE),!grepl('value="human_capital"',ui,fixed=TRUE))
+  grepl('id="state_adjustment_mode"',ui,fixed=TRUE),grepl('id="msa_adjustment_mode"',ui,fixed=TRUE))
 msa <- list(analysis_level="MSA",msa_density_measure="CH",msa_ch_mode="county_adjusted",msa_sectors="1",
   msa_sample_year="1900",msa_iv_year="1900",msa_instrument_type="area_population",msa_overlap_pct="5",
   msa_controls=c("water_1820","railroads_1840"),msa_schooling_adj="3",msa_apply_college_adj=TRUE,
@@ -91,18 +100,44 @@ shiny::testServer(app$server, {
   stopifnot(setequal(unique(calibration$model),names(result$models)),all(calibration$county_water_year==1820),
     !any(calibration$enters_aggregate_index[calibration$term=="county_elasticity"]))
   saved <- paste(readLines(output$download_results,warn=FALSE),collapse="\n")
-  stopifnot(grepl("County geography-adjusted CH",saved,fixed=TRUE),!grepl("<h2>State data</h2>",saved,fixed=TRUE))
-  session$setInputs(msa_schooling_adj="0",msa_apply_college_adj=FALSE,use_fe=FALSE,run_analysis=2L)
+  stopifnot(grepl("County-adjusted CH",saved,fixed=TRUE),!grepl("<h2>State data</h2>",saved,fixed=TRUE))
+  geography_models <- lapply(result$models,coef)
+  session$setInputs(msa_adjustment_mode="both",run_analysis=2L)
+  session$flushReact()
+  combined <- isolate(analysis_output()); check(combined)
+  stopifnot(length(combined$models)==1L,combined$adjustment_mode=="both",
+    combined$schooling_adj==0L,!combined$apply_college_adj,
+    identical(combined$data_for_fs$LHS,combined$data_for_fs$ln_output_worker),
+    combined$models[[1]]$adjustment$kappa_college==.75,
+    max(abs(combined$models[[1]]$county_calibration$gamma-result$models[[1]]$county_calibration$gamma))>1e-6)
+  combined_csv <- read.csv(output$download_coefficients)
+  stopifnot(all(combined_csv$human_capital_inside_ch),all(combined_csv$county_college_coefficient==.75),
+    all(combined_csv$county_schooling_return>0),all(combined_csv$schooling_adjustment=="None"),
+    !any(combined_csv$college_adjustment))
+  combined_calibration <- read.csv(output$download_county_calibration)
+  stopifnot(all(combined_calibration$county_adjustment=="both"),all(combined_calibration$human_capital_inside_ch))
+  # Hidden legacy outcome controls must not change the combined calculation.
+  session$setInputs(msa_schooling_adj="0",msa_apply_college_adj=FALSE,msa_college_coeff="2",run_analysis=3L)
+  session$flushReact()
+  no_double <- isolate(analysis_output()); check(no_double)
+  stopifnot(identical(coef(combined$models[[1]]),coef(no_double$models[[1]])),
+    identical(vcov(combined$models[[1]]),vcov(no_double$models[[1]])))
+  session$setInputs(msa_adjustment_mode="geography",msa_schooling_adj="3",msa_apply_college_adj=TRUE,
+    msa_college_coeff=".75",run_analysis=4L)
+  session$flushReact()
+  restored <- isolate(analysis_output()); check(restored)
+  stopifnot(identical(geography_models,lapply(restored$models,coef)))
+  session$setInputs(msa_schooling_adj="0",msa_apply_college_adj=FALSE,use_fe=FALSE,run_analysis=5L)
   session$flushReact()
   raw <- isolate(analysis_output()); check(raw)
   stopifnot(abs(coef(raw$models[[1]])[["ch_elasticity"]]-.184863)<1e-5)
-  session$setInputs(msa_se_spec="cluster_state",run_analysis=3L)
+  session$setInputs(msa_se_spec="cluster_state",run_analysis=6L)
   session$flushReact()
   linked <- isolate(analysis_output()); check(linked)
   stopifnot(abs(coef(linked$models[[1]])[["ch_elasticity"]]-coef(raw$models[[1]])[["ch_elasticity"]])<1e-8,linked$models[[1]]$clusters<48L)
-  session$setInputs(analysis_type="OLS",run_analysis=4L)
+  session$setInputs(analysis_type="OLS",run_analysis=7L)
   session$flushReact()
   check(isolate(analysis_output()))
 })
 write.csv(do.call(rbind,records),file.path(work,"state_adjustment_checks.csv"),row.names=FALSE)
-cat("County geography-adjusted CH integration checks passed.\n")
+cat("County geography and geography + human capital CH integration checks passed.\n")

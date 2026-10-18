@@ -110,8 +110,9 @@ check_runtime <- function() {
         expected_n = if (scope == "states_only") 42L else 43L)
     }
     for (level in c("MSA", "County")) exercise(list(analysis_level = level), year_switch = TRUE)
-    exercise(list(analysis_level = "State", year_modern = "2020", state_sample_year = "1900", state_iv_year = "1900",
+    for (mode in c("geography", "both")) exercise(list(analysis_level = "State", year_modern = "2020", state_sample_year = "1900", state_iv_year = "1900",
       state_instrument_type = "area_population", sample_scope = "states_territories", state_ch_mode = "county_adjusted",
+      state_adjustment_mode = mode,
       state_county_instrument = "area_population", state_county_area = TRUE,
       state_geo_controls = c("terrain", "crop", "climate"),
       state_water_controls = c("shoreline", "historical_access", "distance", "portage"),

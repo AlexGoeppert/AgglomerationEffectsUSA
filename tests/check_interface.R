@@ -65,7 +65,11 @@ local({
       grepl("checked", input_tag(html, paste0(prefix, "county_area")), fixed = TRUE),
       identical(selected_value(html, paste0(prefix, "water_year")), "1820"),
       grepl("County Geography Adjustment", html, fixed = TRUE),
-      !grepl('value="human_capital"', html, fixed = TRUE), !grepl('value="both"', html, fixed = TRUE),
+      grepl(paste0('id="', prefix, 'adjustment_mode"'), html, fixed = TRUE),
+      grepl('data-value="geography"', html, fixed = TRUE), grepl('data-value="both"', html, fixed = TRUE),
+      grepl('class="active"[^>]*>[\\s\\S]*?data-value="geography"', html, perl = TRUE),
+      grepl("Geography + human capital", html, fixed = TRUE),
+      !grepl('data-value="human_capital"', html, fixed = TRUE),
       !grepl(paste0('id="', prefix, 'schooling_efficiency"'), html, fixed = TRUE))
     groups <- list(geo_controls = c("terrain", "crop", "climate"),
       water_controls = c("shoreline", "historical_access", "distance", "portage"),
@@ -157,5 +161,6 @@ local({
       !grepl("weighted_density_overlap", sent$county_instrument_type$options, fixed = TRUE),
       any(grepl("available for Employment density only", notifications, fixed = TRUE)))
   })
-  cat("Interface checks passed: common County/MSA controls, geography-only MSA/State CH options, preserved settings, explicit model exceptions, and State/Conley switching.\n")
+  stopifnot(grepl("input.msa_adjustment_mode", markup$MSA, fixed = TRUE))
+  cat("Interface checks passed: common County/MSA controls, geography and combined MSA/State CH tabs, preserved settings, explicit model exceptions, and State/Conley switching.\n")
 })

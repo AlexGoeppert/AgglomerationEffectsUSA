@@ -160,7 +160,7 @@ help_state_ch <- paste("Ciccone and Hall (1996) relate state productivity to emp
   "The model estimates theta in log[sum(n^theta a^(1−theta))/sum(n)], where n is county employment and a is county land area. The table reports theta − 1.",
   "The outcome is log state GDP per employment for all industries. BEA combined county units are kept together. Standard CH uses robust standard errors and no schooling adjustment or state fixed effects.",
   "There is one observation per modern state in the selected year. A separate fixed effect for each modern state would absorb all variation, so the density effect could not be estimated. Historical state/territory group effects need not absorb all variation, but are not implemented in this State specification. County and MSA analyses can use state fixed effects because they have multiple geographic units within states.",
-  "County geography-adjusted CH is available for states and MSAs. Geography and transport effects are estimated from a linked county regression and enter the county contributions before aggregation. This option uses joint county-aggregate inference. Human capital does not enter the county adjustment; existing MSA outcome adjustments remain separate. All state specifications use all industries and no mining filter. County and MSA choices are retained separately.",
+  "County-adjusted CH is available for states and MSAs. The Geography tab estimates geography and transport effects from a linked county regression. Geography + human capital also puts schooling and college share inside county contributions and reestimates geography. This option uses joint county-aggregate inference. Separate MSA outcome adjustments remain available in the Geography tab; the combined tab uses the unadjusted aggregate outcome. All state specifications use all industries and no mining filter. County and MSA choices are retained separately.",
   "County matching sums historical populations assigned to current counties in each state. A known total reported jointly for several counties can be used when all belong to the same state. Area weighting allocates historical population by geographic overlap with current counties, assuming uniform density within each historical reporting area. The Levels option uses population in thousands; the Natural log option uses ln(population).",
   "Only states with valid historical population and complete county employment and land area enter the model. Area-weighted state population also requires at least 95% geographic coverage. Known unallocated population makes the affected state total unavailable. The historical year can therefore change the sample.",
   help_state_instrument, help_instrument_form,
@@ -346,10 +346,11 @@ geography_settings_ui <- function(level) {
         paste0("help_", overlap_id), if (level == "MSA") help_msa_overlap_pct else help_county_overlap_threshold),
       p(class = "help-block", if (level == "MSA") "Percentage of the historical county's area overlapping the modern MSA."
         else "Percentage of the modern county's area overlapping the historical county.")),
+    conditionalPanel(if (level == "MSA") "!(input.approach != 'employment' && input.msa_density_measure == 'CH' && input.msa_ch_mode == 'county_adjusted' && input.msa_adjustment_mode == 'both')" else "true",
     field("schooling_adj", "Modern Adjustment for Human Capital", selectInput(id("schooling_adj"), NULL,
       c("None" = 0, "Same Return" = 1, "Specific Return" = 2, "Run Both" = 3), defaults$schooling_adj), help_schooling_adj),
     checkbox("apply_college_adj", "Apply College Share Adjustment", help_apply_college_adj),
-    field("college_coeff", "College Share Coefficient:", textInput(id("college_coeff"), NULL, defaults$college_coeff, placeholder = "0.75"), help_college_coeff),
+    field("college_coeff", "College Share Coefficient:", textInput(id("college_coeff"), NULL, defaults$college_coeff, placeholder = "0.75"), help_college_coeff)),
     checkbox("mining_filter_active", "Filter by Mining Share", help_mining_filter_active),
     field("mining_threshold", "Max Mining Share:", textInput(id("mining_threshold"), NULL, defaults$mining_threshold, placeholder = "0.01"), help_mining_threshold),
     field("se_spec", "Standard Errors:", selectInput(id("se_spec"), NULL,
@@ -1567,6 +1568,7 @@ server <- function(input, output, session) {
           approach <- if (identical(input$approach, "employment")) "employment" else "density"
           density_measure <- if (approach == "employment") "employment" else if (analysis_level == "MSA" && identical(input$msa_density_measure, "CH")) "CH" else "average"
           county_adjusted <- density_measure == "CH" && identical(input$msa_ch_mode, "county_adjusted")
+          combined_county_adjustment <- county_adjusted && identical(input$msa_adjustment_mode, "both")
           if (density_measure == "CH" && !analysis_type %in% c("IV", "OLS")) stop("Choose IV or OLS for the Ciccone–Hall model.")
           use_fe <- input$use_fe
           fe_type <- input$fe_type
@@ -1597,6 +1599,11 @@ server <- function(input, output, session) {
             mining_threshold <- safe_numeric(input$msa_mining_threshold, 0.01)
             spatial_cutoff <- safe_numeric(input$msa_spatial_cutoff, 100)
           })
+          if (combined_county_adjustment) {
+            # Schooling and college enter the county index in this tab.
+            schooling_adj <- 0L
+            apply_college_adj <- FALSE
+          }
           
           df <- get_app_year("MSA", year_modern) %>%
             filter(year == year_modern) %>%
@@ -1800,6 +1807,7 @@ server <- function(input, output, session) {
           "2" = setNames("LHS_adj2", "Specific Return Adj."),
           "3" = setNames(c("LHS_adj1", "LHS_adj2"), c("Same Return Adj.", "Specific Return Adj.")))
         dep_vars <- dep_vars_map[[as.character(schooling_adj)]]
+        if (combined_county_adjustment) names(dep_vars) <- "CH: geography + human capital"
         if (analysis_type == "First-stage Regression") {
           names(dep_vars) <- if (schooling_adj == 0) "First stage" else paste("First stage:", names(dep_vars))
         }
@@ -1849,7 +1857,7 @@ server <- function(input, output, session) {
           parts <- prepared_adjustment$components
           complete_parts <- sca_complete(parts, c("county_id", "state_id", "employment", "area")) &
             parts$employment >= 0 & parts$area > 0 &
-            (parts$employment == 0 | sca_complete(parts, prepared_adjustment$geo_vars))
+            (parts$employment == 0 | sca_complete(parts, prepared_adjustment$component_vars))
           bad <- unique(parts$region_id[!complete_parts])
           adjustment_complete <- df$region_id %in% setdiff(unique(parts$region_id), bad)
           geo_missing_n <- sum(!adjustment_complete)
@@ -1886,7 +1894,7 @@ server <- function(input, output, session) {
                 state_controls = controls_vec, state_fe = fe_part))
               fitted_adjustment <- fit_state_adjusted_ch(df, prepared_adjustment$county,
                 prepared_adjustment$components, adjusted_settings)
-              fitted_adjustment$adjustment_mode <- "geography"
+              fitted_adjustment$adjustment_mode <- prepared_adjustment$mode
               fitted_adjustment
             } else if (density_measure == "CH") {
               fit_ch_model(data = df, dep_var = dep_var_name, controls_vec = controls_vec,
@@ -1924,7 +1932,7 @@ server <- function(input, output, session) {
           approach = approach,
           density_measure = density_measure,
           state_ch_mode = if (county_adjusted) "county_adjusted" else "standard",
-          adjustment_mode = if (county_adjusted) "geography" else NULL,
+          adjustment_mode = if (county_adjusted) prepared_adjustment$mode else NULL,
           county_calibration = if (county_adjusted) models[[1]]$county_calibration else NULL,
           county_calibration_instrument = if (county_adjusted) prepared_adjustment$construction else NULL,
           county_geo_vars = if (county_adjusted) prepared_adjustment$geo_vars else character(),
@@ -2154,10 +2162,14 @@ server <- function(input, output, session) {
     if (length(diagnostic_models)) {
       note <- paste0(note, ' Instrument Wald F is the squared t statistic for the excluded instrument, using the selected standard errors and the model sample.')
     }
-    adjusted_ch <- is_ch && identical(models[[1]]$adjustment_mode, "geography")
+    adjusted_ch <- is_ch && isTRUE(models[[1]]$adjustment_mode %in% c("geography", "both"))
     if (is_ch && !adjusted_ch) note <- paste0(note, ' Ciccone–Hall estimates theta in log[sum(n^theta a^(1−theta))/sum(n)], using county employment n and land area a. The reported elasticity is theta − 1. BEA combined county units are kept together.')
     if (adjusted_ch) {
-      note <- paste0(note, ' County-adjusted CH multiplies each county contribution by exp(X gamma), using geography and transport coefficients estimated from counties. No county schooling or college adjustment enters the index. MSA human-capital options adjust the MSA outcome separately. The table reports theta − 1.')
+      if (identical(models[[1]]$adjustment_mode, "both")) {
+        adjustment <- models[[1]]$adjustment
+        note <- paste0(note, ' Geography + human capital puts exp(X gamma + kappa C + theta h) inside the county CH sum, where h = beta times schooling. Geography coefficients are reestimated using human-capital-adjusted county productivity and effective employment density. The aggregate outcome receives no further schooling or college adjustment. Fixed beta = ',
+          sprintf('%.6f', adjustment$beta_school), ', kappa = ', sprintf('%.2f', adjustment$kappa_college), '. The table reports theta − 1.')
+      } else note <- paste0(note, ' County-adjusted CH multiplies each county contribution by exp(X gamma), using geography and transport coefficients estimated from counties. No county schooling or college adjustment enters the index. MSA human-capital options adjust the MSA outcome separately. The table reports theta − 1.')
       if (isTRUE(models[[1]]$county_calibration$calibrated))
         note <- paste0(note, ' County geographic effects are calibrated with modern state fixed effects; these fixed effects are not inserted into the aggregate index.')
       if (analysis_level == "MSA" && se_spec == "cluster_state") note <- paste0(note, " Joint clustering links states connected by interstate MSAs; the number of independent clusters can be small.")
@@ -2307,7 +2319,13 @@ server <- function(input, output, session) {
     if (identical(details$state_ch_mode, "county_adjusted")) {
       calibration <- details$county_calibration
       detail_sections$adjustments <- paste0(detail_sections$adjustments,
-        '<strong>CH adjustment:</strong> ', htmltools::htmlEscape(details$adjustment_mode), '<br>')
+        '<strong>CH adjustment:</strong> ', if (identical(details$adjustment_mode, "both")) 'Geography + human capital' else 'Geography', '<br>')
+      if (identical(details$adjustment_mode, "both")) detail_sections$adjustments <- paste0(detail_sections$adjustments,
+        '<strong>Human capital inside county index:</strong> Schooling and college share<br>',
+        '<strong>Fixed schooling return:</strong> ', sprintf('%.6f', details$models[[1]]$adjustment$beta_school), '<br>',
+        '<strong>Fixed college-share coefficient:</strong> ', sprintf('%.2f', details$models[[1]]$adjustment$kappa_college), '<br>',
+        '<strong>County schooling reference:</strong> ', details$models[[1]]$adjustment$schooling_reference, '<br>',
+        '<strong>Aggregate human-capital adjustment:</strong> None; human capital enters the county index<br>')
       if (length(details$county_geo_vars)) detail_sections$adjustments <- paste0(detail_sections$adjustments,
         '<strong>County geography effects inside the index:</strong> ',
         paste(vapply(details$county_geo_vars, control_label, character(1)), collapse = ', '), '<br>',
@@ -2331,7 +2349,7 @@ server <- function(input, output, session) {
       '<strong>Standard Errors:</strong> ', se_description, '<br>',
       '<strong>Observations used:</strong> ', if (length(unique(details$model_n)) == 1L) format(details$model_n[[1]], big.mark = ',') else paste(names(details$model_n), format(details$model_n, big.mark = ','), sep = ': ', collapse = '; '), '<br>',
       '<strong>Eligible before control and model exclusions:</strong> ', format(details$eligible_n, big.mark = ','), '<br>',
-      if (identical(details$state_ch_mode, "county_adjusted")) paste0('<strong>', details$analysis_level, ' observations missing selected county geography:</strong> ') else '<strong>Missing selected geographic controls:</strong> ', format(details$geo_missing_n, big.mark = ','),
+      if (identical(details$state_ch_mode, "county_adjusted")) paste0('<strong>', details$analysis_level, ' observations missing selected county inputs:</strong> ') else '<strong>Missing selected geographic controls:</strong> ', format(details$geo_missing_n, big.mark = ','),
       if (identical(details$density_measure, 'CH')) paste0('<br><strong>Incomplete county inputs:</strong> ', details$ch_missing_n) else ''
     )
     
@@ -2401,7 +2419,7 @@ server <- function(input, output, session) {
       "eligible observations have incomplete county employment or land area for the Ciccone–Hall model."))))
     if (missing_geo > 0) notices <- c(notices, list(p(paste(format(missing_geo, big.mark = ","),
       if (identical(details$state_ch_mode, "county_adjusted"))
-        paste(details$analysis_level, "observations have incomplete selected county geography. Entire regions are excluded; partial sums are not used.")
+        paste(details$analysis_level, "observations have incomplete selected county adjustment inputs. Entire regions are excluded; partial sums are not used.")
       else "eligible observations have missing values in the selected geographic controls. Missing values are excluded, never set to zero."))))
     if (length(unique(counts)) > 1) notices <- c(notices, list(p("The models use different sample sizes because their required values differ.")))
     if (length(omitted)) notices <- c(notices, list(p(paste("Omitted because of collinearity:", paste(vapply(omitted, control_label, character(1)), collapse = "; "), "."))))
@@ -2417,7 +2435,7 @@ server <- function(input, output, session) {
 
   output$data_notes <- renderUI({
     if (identical(analysis_output()$state_ch_mode, "county_adjusted"))
-      return(div(class = "data-notes", h4("County geography-adjusted CH"), p(help_state_adjusted_ch),
+      return(div(class = "data-notes", h4("County-adjusted CH"), p(help_state_adjusted_ch),
         if (identical(analysis_output()$analysis_level, "State")) tagList(h4("Historical state sample"), p(help_state_ch)),
         geographic_help(names(geographic_notes))))
     if (identical(analysis_output()$analysis_level, "State")) return(div(class = "data-notes", h4("State data"), p(help_state_ch)))
@@ -2456,6 +2474,10 @@ server <- function(input, output, session) {
       if (identical(details$state_ch_mode, "county_adjusted")) {
         table$ch_specification <- details$state_ch_mode
         table$county_adjustment <- details$adjustment_mode
+        table$human_capital_inside_ch <- identical(details$adjustment_mode, "both")
+        table$county_schooling_return <- details$models[[1]]$adjustment$beta_school
+        table$county_college_coefficient <- details$models[[1]]$adjustment$kappa_college
+        table$county_schooling_reference <- details$models[[1]]$adjustment$schooling_reference
         table$county_geography_variables <- paste(details$county_geo_vars, collapse = "; ")
         table$county_calibration_n <- vapply(details$models[table$model], function(m) m$county_calibration$nobs, integer(1))
         calibrated_iv <- isTRUE(details$county_calibration$calibrated) && details$analysis_type == "IV"
@@ -2494,6 +2516,11 @@ server <- function(input, output, session) {
           instrument_scale = if (details$analysis_type == "IV") "levels" else NA_character_,
           county_state_fixed_effects = TRUE, stringsAsFactors = FALSE)
         value$enters_aggregate_index <- value$term %in% details$county_geo_vars
+        value$county_adjustment <- details$adjustment_mode
+        value$human_capital_inside_ch <- identical(details$adjustment_mode, "both")
+        value$county_schooling_return <- details$models[[model_name]]$adjustment$beta_school
+        value$county_college_coefficient <- details$models[[model_name]]$adjustment$kappa_college
+        value$county_schooling_reference <- details$models[[model_name]]$adjustment$schooling_reference
         value$statistic <- value$estimate / value$std_error
         value$p_value <- 2 * pnorm(-abs(value$statistic))
         value$county_water_year <- if (identical(details$analysis_level, "MSA")) details$county_water_year else details$water_year
@@ -2536,7 +2563,11 @@ server <- function(input, output, session) {
         `Water-access year` = if (!identical(details$analysis_level, "State")) details$water_year else NULL,
         Controls = if (length(details$controls_vec)) paste(vapply(details$controls_vec, control_label, character(1)), collapse = "; ") else "None")
       if (identical(details$state_ch_mode, "county_adjusted")) specifications <- c(specifications,
-        `County adjustment` = details$adjustment_mode,
+        `County adjustment` = if (identical(details$adjustment_mode, "both")) "Geography + human capital" else "Geography",
+        `Human capital inside county index` = identical(details$adjustment_mode, "both"),
+        `Fixed county schooling return` = details$models[[1]]$adjustment$beta_school,
+        `Fixed county college coefficient` = details$models[[1]]$adjustment$kappa_college,
+        `County schooling reference` = details$models[[1]]$adjustment$schooling_reference,
         `County geography variables` = paste(details$county_geo_vars, collapse = "; "),
         `County calibration observations` = paste(names(details$models), vapply(details$models, function(m) m$county_calibration$nobs, integer(1)), sep = ": ", collapse = "; "),
         `County calibration method` = if (isTRUE(details$county_calibration$calibrated)) details$county_calibration$method else "Not used",
@@ -2549,7 +2580,7 @@ server <- function(input, output, session) {
       warning_html <- if (length(export_notes)) paste0('<h2>Estimation notes</h2><p>',
         paste(esc(export_notes), collapse = '</p><p>'), '</p>') else ''
       geo_html <- if (identical(details$state_ch_mode, "county_adjusted"))
-        paste0('<h2>County geography-adjusted CH</h2><p>',
+        paste0('<h2>County-adjusted CH</h2><p>',
           paste(esc(strsplit(help_state_adjusted_ch, "\n", fixed = TRUE)[[1]]), collapse = '</p><p>'),
           '</p><p>Adjustment: ', esc(details$adjustment_mode), '. County geography variables: ',
           esc(paste(details$county_geo_vars, collapse = ', ')), '.</p>',

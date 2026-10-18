@@ -6,6 +6,7 @@ setFixest_nthreads(1)
 setFixest_notes(FALSE)
 repo <- normalizePath(Sys.getenv('APP_REPO', unset='.'), mustWork=TRUE)
 app <- new.env(parent=globalenv())
+source(file.path(repo,'pdf_help.R'),local=app,encoding='UTF-8')
 for (expr in parse(file.path(repo,'app.R'))) if (is.call(expr) &&
   identical(expr[[1]],as.name('<-')) && !identical(as.character(expr[[2]]),'ui')) eval(expr,app)
 for (generic in c('coef','vcov','nobs','residuals','fitted','confint'))

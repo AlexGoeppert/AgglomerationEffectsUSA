@@ -2167,7 +2167,7 @@ server <- function(input, output, session) {
     if (adjusted_ch) {
       if (identical(models[[1]]$adjustment_mode, "both")) {
         adjustment <- models[[1]]$adjustment
-        note <- paste0(note, ' Geography + human capital puts exp(X gamma + kappa C + theta h) inside the county CH sum, where h = beta times schooling. Geography coefficients are reestimated using human-capital-adjusted county productivity and effective employment density. The aggregate outcome receives no further schooling or college adjustment. Fixed beta = ',
+        note <- paste0(note, ' Geography + human capital puts exp(X gamma + h + kappa C) inside the county CH sum, where h = beta times schooling. Geography coefficients are reestimated using human-capital-adjusted county productivity and ordinary log employment density. The aggregate outcome receives no further schooling or college adjustment. Fixed beta = ',
           sprintf('%.6f', adjustment$beta_school), ', kappa = ', sprintf('%.2f', adjustment$kappa_college), '. The table reports theta − 1.')
       } else note <- paste0(note, ' County-adjusted CH multiplies each county contribution by exp(X gamma), using geography and transport coefficients estimated from counties. No county schooling or college adjustment enters the index. MSA human-capital options adjust the MSA outcome separately. The table reports theta − 1.')
       if (isTRUE(models[[1]]$county_calibration$calibrated))
@@ -2478,6 +2478,8 @@ server <- function(input, output, session) {
         table$county_schooling_return <- details$models[[1]]$adjustment$beta_school
         table$county_college_coefficient <- details$models[[1]]$adjustment$kappa_college
         table$county_schooling_reference <- details$models[[1]]$adjustment$schooling_reference
+        table$county_density_regressor <- "Log employment density"
+        table$county_log_area_control <- "ln_area" %in% details$models[[1]]$county_calibration$nuisance
         table$county_geography_variables <- paste(details$county_geo_vars, collapse = "; ")
         table$county_calibration_n <- vapply(details$models[table$model], function(m) m$county_calibration$nobs, integer(1))
         calibrated_iv <- isTRUE(details$county_calibration$calibrated) && details$analysis_type == "IV"
@@ -2521,6 +2523,8 @@ server <- function(input, output, session) {
         value$county_schooling_return <- details$models[[model_name]]$adjustment$beta_school
         value$county_college_coefficient <- details$models[[model_name]]$adjustment$kappa_college
         value$county_schooling_reference <- details$models[[model_name]]$adjustment$schooling_reference
+        value$county_density_regressor <- "Log employment density"
+        value$county_log_area_control <- "ln_area" %in% calibration$nuisance
         value$statistic <- value$estimate / value$std_error
         value$p_value <- 2 * pnorm(-abs(value$statistic))
         value$county_water_year <- if (identical(details$analysis_level, "MSA")) details$county_water_year else details$water_year
@@ -2568,6 +2572,7 @@ server <- function(input, output, session) {
         `Fixed county schooling return` = details$models[[1]]$adjustment$beta_school,
         `Fixed county college coefficient` = details$models[[1]]$adjustment$kappa_college,
         `County schooling reference` = details$models[[1]]$adjustment$schooling_reference,
+        `County density regressor` = "Log employment density",
         `County geography variables` = paste(details$county_geo_vars, collapse = "; "),
         `County calibration observations` = paste(names(details$models), vapply(details$models, function(m) m$county_calibration$nobs, integer(1)), sep = ": ", collapse = "; "),
         `County calibration method` = if (isTRUE(details$county_calibration$calibrated)) details$county_calibration$method else "Not used",

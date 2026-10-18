@@ -26,6 +26,35 @@ settings <- list(analysis_level="State",year_modern="2010",analysis_type="IV",
   approach="density",msa_density_measure="average",msa_instrument_type="overlap",
   county_instrument_type="max_density_overlap",use_fe=FALSE,show_map=FALSE)
 records <- list()
+identity_records <- list()
+parity_records <- list()
+record_parity <- function(result, label) {
+  m <- result$models[[1]]
+  parity_records[[length(parity_records)+1L]] <<- data.frame(case=label,n=nobs(m),
+    county_n=m$county_calibration$nobs,b=coef(m)[["ch_elasticity"]],
+    se=sqrt(vcov(m)[1,1]),S=m$stock_wright$statistic,S_p=m$stock_wright$p_value,
+    county_b=m$county_calibration$coefficients[["county_elasticity"]],
+    beta=m$adjustment$beta_school,kappa=m$adjustment$kappa_college)
+}
+check_county_iv_identity <- function(prepared, model, label) {
+  calibration <- model$county_calibration
+  cc <- prepared$county[match(calibration$county_ids, as.character(prepared$county$county_id)), , drop=FALSE]
+  stopifnot(nrow(cc)==calibration$nobs, !anyNA(cc$county_id))
+  settings <- prepared$settings
+  hc <- app$sca_human_capital(cc,settings$mode,settings$beta_school,settings$kappa_college,settings$schooling_reference)
+  cc$y_adjusted <- cc$y-hc$h-hc$college_effect
+  controls <- c(prepared$geo_vars,settings$county_controls)
+  formula <- as.formula(paste("y_adjusted ~",paste(controls,collapse=" + "),"| state_id | x ~ instrument"))
+  ordinary <- fixest::feols(formula,cc,vcov=~joint_cluster,fixef.rm="none",
+    ssc=fixest::ssc(K.adj=FALSE,G.adj=FALSE))
+  calibration_terms <- c("county_elasticity",controls)
+  ordinary_terms <- c("fit_x",controls)
+  b_gap <- max(abs(calibration$coefficients[calibration_terms]-coef(ordinary)[ordinary_terms]))
+  v_gap <- max(abs(calibration$covariance[calibration_terms,calibration_terms]-vcov(ordinary)[ordinary_terms,ordinary_terms]))
+  stopifnot(nobs(ordinary)==calibration$nobs,b_gap<1e-7,v_gap<1e-7)
+  identity_records[[length(identity_records)+1L]] <<- data.frame(case=label,n=calibration$nobs,
+    log_area="ln_area" %in% settings$county_controls,coefficient_gap=b_gap,CR0_covariance_gap=v_gap)
+}
 check <- function(result) {
   if(!is.null(result$error)) stop(result$error)
   for(name in names(result$models)) {
@@ -55,11 +84,21 @@ after <- app$state_ch_result(standard,app$state_data)$models[[1]]
 stopifnot(identical(before$coefficients,after$coefficients),identical(before$covariance,after$covariance))
 combined_state <- app$state_ch_result(modifyList(settings,list(state_adjustment_mode="both")),app$state_data)
 check(combined_state)
+record_parity(combined_state,"state_both_area_on")
+check_county_iv_identity(app$prepare_county_geography(modifyList(settings,list(state_adjustment_mode="both")),combined_state$data_for_fs),combined_state$models[[1]],"State combined, log area on")
 stopifnot(combined_state$adjustment_mode=="both",combined_state$schooling_adj==0L,!combined_state$apply_college_adj,
   combined_state$models[[1]]$adjustment$beta_school>0,
   combined_state$models[[1]]$adjustment$kappa_college==.75,
   combined_state$models[[1]]$adjustment$schooling_reference==0,
   max(abs(combined_state$models[[1]]$county_calibration$gamma-baseline$models[[1]]$county_calibration$gamma))>1e-6)
+state_no_area_input <- modifyList(settings,list(state_adjustment_mode="both",state_county_area=FALSE))
+combined_state_no_area <- app$state_ch_result(state_no_area_input,app$state_data)
+check(combined_state_no_area)
+record_parity(combined_state_no_area,"state_both_area_off")
+check_county_iv_identity(app$prepare_county_geography(state_no_area_input,combined_state_no_area$data_for_fs),combined_state_no_area$models[[1]],"State combined, log area off")
+state_default <- state_no_area_input
+state_default$state_county_area <- NULL
+stopifnot(identical(coef(app$state_ch_result(state_default,app$state_data)$models[[1]]),coef(combined_state_no_area$models[[1]])))
 original_static <- app$get_state_adjustment_inputs
 static <- as.data.frame(original_static())
 static$avg_schooling_10_14 <- static$college_share <- NA_real_
@@ -102,18 +141,25 @@ shiny::testServer(app$server, {
   saved <- paste(readLines(output$download_results,warn=FALSE),collapse="\n")
   stopifnot(grepl("County-adjusted CH",saved,fixed=TRUE),!grepl("<h2>State data</h2>",saved,fixed=TRUE))
   geography_models <- lapply(result$models,coef)
-  session$setInputs(msa_adjustment_mode="both",run_analysis=2L)
+  session$setInputs(msa_adjustment_mode="both",msa_county_area=FALSE,run_analysis=2L)
   session$flushReact()
   combined <- isolate(analysis_output()); check(combined)
+  record_parity(combined,"msa_both_state_id_area_off")
   stopifnot(length(combined$models)==1L,combined$adjustment_mode=="both",
     combined$schooling_adj==0L,!combined$apply_college_adj,
     identical(combined$data_for_fs$LHS,combined$data_for_fs$ln_output_worker),
     combined$models[[1]]$adjustment$kappa_college==.75,
     max(abs(combined$models[[1]]$county_calibration$gamma-result$models[[1]]$county_calibration$gamma))>1e-6)
+  combined_inputs <- modifyList(modifyList(settings,msa),list(msa_adjustment_mode="both",msa_county_area=FALSE))
+  check_county_iv_identity(app$prepare_county_geography(combined_inputs,combined$data_for_fs,"MSA",combined$se_spec),combined$models[[1]],"MSA combined with FE, log area off")
   combined_csv <- read.csv(output$download_coefficients)
   stopifnot(all(combined_csv$human_capital_inside_ch),all(combined_csv$county_college_coefficient==.75),
     all(combined_csv$county_schooling_return>0),all(combined_csv$schooling_adjustment=="None"),
-    !any(combined_csv$college_adjustment))
+    !any(combined_csv$college_adjustment),!any(combined_csv$county_log_area_control),
+    all(combined_csv$county_density_regressor=="Log employment density"))
+  combined_html <- output$results_table$html
+  stopifnot(grepl("ordinary log employment density",combined_html,fixed=TRUE),
+    !grepl("effective employment density",combined_html,fixed=TRUE),!grepl("theta h",combined_html,fixed=TRUE))
   combined_calibration <- read.csv(output$download_county_calibration)
   stopifnot(all(combined_calibration$county_adjustment=="both"),all(combined_calibration$human_capital_inside_ch))
   # Hidden legacy outcome controls must not change the combined calculation.
@@ -122,8 +168,14 @@ shiny::testServer(app$server, {
   no_double <- isolate(analysis_output()); check(no_double)
   stopifnot(identical(coef(combined$models[[1]]),coef(no_double$models[[1]])),
     identical(vcov(combined$models[[1]]),vcov(no_double$models[[1]])))
-  session$setInputs(msa_adjustment_mode="geography",msa_schooling_adj="3",msa_apply_college_adj=TRUE,
-    msa_college_coeff=".75",run_analysis=4L)
+  session$setInputs(use_fe=FALSE,run_analysis=31L)
+  session$flushReact()
+  combined_no_fe <- isolate(analysis_output()); check(combined_no_fe)
+  record_parity(combined_no_fe,"msa_both_0_area_off")
+  combined_no_fe_inputs <- modifyList(combined_inputs,list(use_fe=FALSE))
+  check_county_iv_identity(app$prepare_county_geography(combined_no_fe_inputs,combined_no_fe$data_for_fs,"MSA",combined_no_fe$se_spec),combined_no_fe$models[[1]],"MSA combined without FE, log area off")
+  session$setInputs(msa_adjustment_mode="geography",msa_county_area=TRUE,msa_schooling_adj="3",msa_apply_college_adj=TRUE,
+    msa_college_coeff=".75",use_fe=TRUE,run_analysis=4L)
   session$flushReact()
   restored <- isolate(analysis_output()); check(restored)
   stopifnot(identical(geography_models,lapply(restored$models,coef)))
@@ -140,4 +192,6 @@ shiny::testServer(app$server, {
   check(isolate(analysis_output()))
 })
 write.csv(do.call(rbind,records),file.path(work,"state_adjustment_checks.csv"),row.names=FALSE)
+write.csv(do.call(rbind,identity_records),file.path(work,"county_iv_estimator_identity.csv"),row.names=FALSE)
+write.csv(do.call(rbind,parity_records),file.path(work,"combined_production_parity.csv"),row.names=FALSE)
 cat("County geography and geography + human capital CH integration checks passed.\n")

@@ -3,7 +3,7 @@ help_state_adjusted_ch <- paste(
   "The county equation relates log GDP per employment to log employment density, the selected geography variables, modern state fixed effects and optional log county area. IV uses historical population in levels for county density; OLS uses the same controls without an instrument.",
   "From the county regression, only the fitted geography and transport effects are transferred to the index. The county density coefficient, fixed effects and area coefficient are not inserted into the index. The aggregate model estimates its own CH elasticity.",
   "The Geography tab uses geography and transport only. Existing MSA human-capital options then adjust the MSA outcome separately.",
-  "The Geography + human capital tab puts schooling and college share inside each county contribution. The fixed schooling return is the existing micro estimate (about 0.102623); the college-share coefficient is 0.75. Geography is reestimated after subtracting h + 0.75 times college share from county log GDP per employment and using log density + h, where h is the schooling return times years of schooling. The index contribution becomes n times exp(X gamma + 0.75 times college share + theta times h) times density to the power theta minus one. The denominator remains actual employment. The aggregate outcome receives no further schooling or college adjustment.",
+  "The Geography + human capital tab puts schooling and college share inside each county contribution. The fixed schooling return is the existing micro estimate (about 0.102623); the college-share coefficient is 0.75. Geography is reestimated after subtracting h + 0.75 times college share from county log GDP per employment, where h is the schooling return times years of schooling. The county density regressor remains log employment per unit of land area, as in the ordinary County IV model. The index contribution becomes n times exp(X gamma + h + 0.75 times college share) times density to the power theta minus one. The denominator remains actual employment. The aggregate outcome receives no further schooling or college adjustment.",
   "Calibration uses eligible counties in all constituent states, including nonmetropolitan counties. Every constituent county remains in the index, including counties outside the historical calibration sample. Missing a required geography or human-capital input in a positive-employment county excludes the whole MSA or state.",
   "Joint standard errors and the zero-elasticity S test account for estimated geography and observations shared by the two stages. The county calibration must be identified. MSA clustering puts an MSA and its constituent counties together; counties outside represented MSAs retain their own MSA or county cluster. State clustering joins states connected by interstate MSAs to keep shared observations together.",
   sep = "\n")
@@ -28,7 +28,7 @@ state_adjustment_settings_ui <- function(level = "State") {
             c("Area-weighted population" = "area_population", "Glaeser and Gottlieb (2009)" = "county_population"), "area_population"),
           id("help_county_instrument"),
           "The county IV uses population in levels, with the same historical years and territory scope as the aggregate model. The population matching method can be selected separately.")),
-      checkboxInput(id("county_area"), "Include log county area in the calibration", TRUE),
+      checkboxInput(id("county_area"), "Include log county area in the calibration", FALSE),
       h4("County Geography Adjustment"),
       labeledInput(id("geo_controls"), "Terrain, crop suitability and climate:",
         checkboxGroupInput(id("geo_controls"), NULL,
@@ -229,7 +229,7 @@ prepare_county_geography <- function(input, data, level = "State", se_spec = "cl
   }
   county <- scale_model_controls(county, geo_vars)
   components <- scale_model_controls(components, geo_vars)
-  area <- if (is.null(get("county_area"))) TRUE else isTRUE(get("county_area"))
+  area <- if (is.null(get("county_area"))) FALSE else isTRUE(get("county_area"))
   list(data = data, county = county, components = components, geo_vars = geo_vars,
     component_vars = c(geo_vars, if (combined) c("schooling", "college")),
     construction = construction, water_year = water_year, mode = mode,

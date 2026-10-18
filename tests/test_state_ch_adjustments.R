@@ -168,15 +168,15 @@ stopifnot(msa_missing$nobs == 30L, !"1" %in% msa_missing$region_ids,
   msa_missing$county_calibration$nobs == 192L)
 cat("MSA full-constituent-state calibration and shared-cluster checks passed.\n")
 
-# Human capital belongs inside the county sum in the additional mode. The
-# derivative includes effective-employment density, log(d) + h.
+# Human capital shifts county productivity inside the additional index. The
+# density variable remains log employment per unit of land area.
 both_settings <- modifyList(settings, list(mode = "both", beta_school = .07,
   kappa_college = .15, schooling_reference = 0))
 both_index <- sca_make_index(components, state_levels, "geo", .04,
   mode = "both", beta_school = .07, kappa_college = .15)
 both_direct <- vapply(seq_len(S), function(s) {
   a <- components[components$state_id == s, ]
-  log(sum(a$employment * exp(.04 * a$geo + .15 * a$college + t * .07 * a$schooling) *
+  log(sum(a$employment * exp(.04 * a$geo + .15 * a$college + .07 * a$schooling) *
     (a$employment / a$area)^(t - 1)) / sum(a$employment))
 }, numeric(1))
 close_enough(both_index(t)$value, both_direct)
@@ -191,6 +191,14 @@ close_enough(as.vector(both_index(t)$gamma_derivative),
 close_enough(as.vector(both_index(t)$mixed_derivative),
   (both_plus(t)$derivative - both_minus(t)$derivative) / (2 * h))
 
+# With one county per region the index reduces to the ordinary county equation.
+single_parts <- components[!duplicated(components$state_id), ]
+single_index <- sca_make_index(single_parts, state_levels, "geo", .04, "both", .07, .15)
+single_log_density <- log(single_parts$employment / single_parts$area)
+close_enough(single_index(t)$value, .04 * single_parts$geo + .07 * single_parts$schooling +
+  .15 * single_parts$college + (t - 1) * single_log_density)
+close_enough(single_index(t)$derivative, single_log_density)
+
 both_d <- d
 both_d$LHS <- 10 + both_index(1.09)$value + rnorm(S, sd = .025)
 both_fit <- fit_state_adjusted_ch(both_d, county, components, both_settings)
@@ -200,18 +208,21 @@ stopifnot(both_fit$nobs == S, both_fit$adjustment$mode == "both",
   both_fit$stock_wright$status == "available",
   abs(both_fit$county_calibration$gamma - fit$county_calibration$gamma) > 1e-5)
 
-# The county calibration must be refitted with its adjusted outcome and
-# effective-employment density, rather than reusing geography-only estimates.
+# The county calibration uses the human-capital-adjusted outcome and ordinary
+# log density, with geography effects reestimated for that specification.
 manual_county <- county
 manual_county$joint_cluster <- manual_county$state_id
 manual_county$y <- county$y - .07 * county$schooling - .15 * county$college
-manual_county$x <- county$x + .07 * county$schooling
+manual_county$x <- county$x
 manual_calibration <- sca_county_fit(manual_county, "geo", character(), "IV", TRUE)
 close_enough(both_fit$county_calibration$coefficients, manual_calibration$coefficients)
 close_enough(both_fit$county_calibration$covariance, manual_calibration$covariance)
 close_enough(both_fit$full_covariance, crossprod(both_fit$state_influence))
 
 # Changing the common schooling reference changes only the aggregate intercept.
+centered_index <- sca_make_index(components, state_levels, "geo", .04, "both", .07, .15, 12)
+close_enough(centered_index(t)$value, both_index(t)$value - .07 * 12)
+close_enough(centered_index(t)$derivative, both_index(t)$derivative)
 centered_fit <- fit_state_adjusted_ch(both_d, county, components,
   modifyList(both_settings, list(schooling_reference = 12)))
 close_enough(both_fit$theta, centered_fit$theta)
@@ -219,7 +230,7 @@ close_enough(both_fit$county_calibration$gamma, centered_fit$county_calibration$
 close_enough(both_fit$covariance["ch_elasticity", "ch_elasticity"],
   centered_fit$covariance["ch_elasticity", "ch_elasticity"])
 close_enough(centered_fit$full_coefficients["(Intercept)"],
-  both_fit$full_coefficients["(Intercept)"] + both_fit$theta * .07 * 12)
+  both_fit$full_coefficients["(Intercept)"] + .07 * 12)
 
 # Missing schooling or college in one positive-employment county removes its
 # whole region only from the combined model. Zero-employment counties need no HC.

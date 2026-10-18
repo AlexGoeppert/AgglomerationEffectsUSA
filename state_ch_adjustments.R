@@ -141,7 +141,7 @@ sca_make_index <- function(components, state_levels, geo_vars, gamma, mode = "ge
   hc <- sca_human_capital(components, mode, beta_school, kappa_college, schooling_reference)
   base <- rep(-Inf, length(n))
   base[positive] <- log(n[positive]) + geo[positive] + hc$h[positive] + hc$college_effect[positive]
-  q <- x + hc$h
+  q <- x
   total <- as.vector(rowsum(n, group, reorder = FALSE))
   if (any(total <= 0) || length(total) != length(state_levels)) stop("A region has no complete positive-employment county components.")
   function(theta) {
@@ -225,7 +225,6 @@ fit_state_adjusted_ch <- function(data, county, components, settings = list()) {
   county <- county[as.character(county$state_id) %in% unique(as.character(components$state_id)), , drop = FALSE]
   hc <- sca_human_capital(county, mode, beta_school, kappa_college, settings$schooling_reference)
   county$y <- county$y - hc$h - hc$college_effect
-  county$x <- county$x + hc$h
   calibration <- sca_county_fit(county, geo_vars, settings$county_controls, method, isTRUE(settings$county_fe))
   calibration$human_capital <- list(mode = mode, beta_school = beta_school,
     kappa_college = kappa_college, schooling_reference = settings$schooling_reference,

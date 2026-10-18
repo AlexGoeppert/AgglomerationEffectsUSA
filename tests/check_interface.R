@@ -62,7 +62,7 @@ local({
       identical(selected_value(html, paste0(prefix, "ch_mode")), "standard"),
       identical(option_values(html, paste0(prefix, "county_instrument")), c("area_population", "county_population")),
       identical(selected_value(html, paste0(prefix, "county_instrument")), "area_population"),
-      grepl("checked", input_tag(html, paste0(prefix, "county_area")), fixed = TRUE),
+      !grepl("checked", input_tag(html, paste0(prefix, "county_area")), fixed = TRUE),
       identical(selected_value(html, paste0(prefix, "water_year")), "1820"),
       grepl("County Geography Adjustment", html, fixed = TRUE),
       grepl(paste0('id="', prefix, 'adjustment_mode"'), html, fixed = TRUE),

@@ -248,7 +248,8 @@ shiny::testServer(app$server, {
   stopifnot(length(hc_msa$models)==1L,hc_msa$schooling_adj==0L,!hc_msa$apply_college_adj,
     hc_msa$fe_part=="state_id",identical(hc_msa$data_for_fs$LHS,hc_msa$data_for_fs$ln_output_worker),
     nobs(hc_msa$models[[1]])>=nobs(combined$models[[1]]),!length(hc_msa$county_geo_vars),
-    is.na(hc_msa$county_water_year),is.na(hc_msa$county_calibration_instrument))
+    is.na(hc_msa$county_water_year),is.na(hc_msa$county_calibration_instrument),
+    all(c("11260","21820","46520") %in% hc_msa$models[[1]]$region_ids))
   hc_html <- output$results_table$html
   stopifnot(grepl("Schooling and college",hc_html,fixed=TRUE),
     !grepl("County calibration observations",hc_html,fixed=TRUE),
@@ -280,7 +281,8 @@ shiny::testServer(app$server, {
   session$setInputs(use_fe=FALSE,msa_county_area=FALSE,run_analysis=10L)
   session$flushReact()
   hc_no_fe <- isolate(analysis_output()); check(hc_no_fe)
-  stopifnot(hc_no_fe$fe_part=="0")
+  stopifnot(hc_no_fe$fe_part=="0",
+    all(c("11260","21820","46520","47900") %in% hc_no_fe$models[[1]]$region_ids))
   record_parity(hc_no_fe,"msa_human_capital_0_area_off")
   session$setInputs(use_fe=TRUE,analysis_type="OLS",run_analysis=11L)
   session$flushReact()

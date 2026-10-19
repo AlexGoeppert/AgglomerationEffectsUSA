@@ -90,7 +90,8 @@ local({
   }
   shiny::testServer(test_server, {
     session$setInputs(msa_instrument_type = "overlap", state_ch_mode = "county_adjusted",
-      state_adjustment_mode = "geography", msa_ch_mode = "county_adjusted", msa_adjustment_mode = "geography")
+      state_adjustment_mode = "geography", msa_ch_mode = "county_adjusted", msa_adjustment_mode = "geography",
+      settings_section = "controls", analysis_level = "MSA")
     session$flushReact()
     assert_document <- function(id, image = TRUE) {
       displayed <- output$pdf_help_viewer$html
@@ -139,7 +140,9 @@ local({
     # A stale or unexpected browser value cannot load an unrelated document.
     session$setInputs(pdf_help_topic = "../outside")
     stopifnot(!grepl("outside", output$pdf_help_viewer$html, fixed = TRUE))
-    stopifnot(input$msa_instrument_type == "area_population", input$msa_adjustment_mode == "both")
+    stopifnot(input$msa_instrument_type == "area_population", input$msa_adjustment_mode == "both",
+      input$settings_section == "controls", input$analysis_level == "MSA",
+      !"settings_section" %in% names(sent), !"analysis_level" %in% names(sent))
   })
   cat("PDF help checks passed:", length(ids), "buttons, 19 local documents, dynamic topics, related notes, repeated opens, image previews, and optional PDF viewer.\n")
 })

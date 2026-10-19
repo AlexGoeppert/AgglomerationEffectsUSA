@@ -307,7 +307,8 @@ geography_standard_errors <- function(level, instrument, ch = FALSE) {
   choices
 }
 
-geography_settings_ui <- function(level) {
+geography_settings_ui <- function(level, section = c("model", "instrument", "controls", "inference")) {
+  section <- match.arg(section, several.ok = TRUE)
   prefix <- tolower(level)
   id <- function(name) paste0(prefix, "_", name)
   defaults <- geography_settings_defaults()
@@ -319,45 +320,53 @@ geography_settings_ui <- function(level) {
   overlap_id <- id(if (level == "MSA") "overlap_pct" else "overlap_threshold")
   overlap_condition <- if (level == "MSA") "input.msa_instrument_type == 'overlap'" else
     "input.county_instrument_type == 'max_density_overlap' || input.county_instrument_type == 'weighted_density_overlap'"
+  msa_ch_condition <- "input.approach != 'employment' && input.msa_density_measure == 'CH'"
+  hc_condition <- if (level == "MSA") paste0("!(", msa_ch_condition,
+    " && input.msa_ch_mode == 'county_adjusted' && input.msa_adjustment_mode == 'both')") else "true"
   density_choices <- c("Average employment density" = "average")
   if (level == "MSA") density_choices <- c(density_choices, "Ciccone–Hall index" = "CH")
   tagList(
-    h4("4. Geographic Unit Settings"),
-    conditionalPanel("input.approach != 'employment'",
-      field("density_measure", "Density measure:",
-        selectInput(id("density_measure"), NULL, density_choices, "average"), help_state_ch),
-      if (level == "County") p(class = "help-block", "With one county per observation, the Ciccone–Hall model reduces to the regression using log county employment density.")),
-    if (level == "MSA") conditionalPanel("input.approach != 'employment' && input.msa_density_measure == 'CH'",
-      p(class = "help-block", "Uses employment density within each MSA's counties. OLS uses nonlinear least squares; IV uses GMM. State fixed effects and controls remain available. A separate first-stage regression and Conley standard errors are not implemented for this model."),
-      state_adjustment_settings_ui("MSA")),
-    field("sectors", "Sector:", selectInput(id("sectors"), NULL,
-      c("All" = 1, "Private" = 2, "Manufacturing" = 3, "Private non-farm" = 4, "Private non-farm/mining" = 5), defaults$sectors), help_sectors),
-    field("sample_year", "Year of the Historical Territory:", selectInput(id("sample_year"), NULL, historical_census_years, defaults$sample_year), help_sample_year),
-    field("iv_year", textOutput(id("iv_year_label"), inline = TRUE), selectInput(id("iv_year"), NULL, historical_census_years, defaults$iv_year), help_iv_year),
-    field("instrument_type", "Match of Historical to Modern Geographic Units:",
-      selectInput(id("instrument_type"), NULL, geography_instrument_choices(level), if (level == "MSA") "overlap" else "max_density_overlap"),
-      if (level == "MSA") help_msa_instrument_type else help_county_instrument_type),
-    if (level == "MSA") p(class = "help-block", "Weighted density overlap is available at County level."),
-    conditionalPanel(overlap_condition,
-      labeledInput(overlap_id, "Minimum Overlap (%):", selectInput(overlap_id, NULL, c(5,10,20,30,40,50,60,70,80,90), defaults$overlap),
-        paste0("help_", overlap_id), if (level == "MSA") help_msa_overlap_pct else help_county_overlap_threshold),
-      p(class = "help-block", if (level == "MSA") "Percentage of the historical county's area overlapping the modern MSA."
-        else "Percentage of the modern county's area overlapping the historical county.")),
-    conditionalPanel(if (level == "MSA") "!(input.approach != 'employment' && input.msa_density_measure == 'CH' && input.msa_ch_mode == 'county_adjusted' && input.msa_adjustment_mode == 'both')" else "true",
-    field("schooling_adj", "Modern Adjustment for Human Capital", selectInput(id("schooling_adj"), NULL,
-      c("None" = 0, "Same Return" = 1, "Specific Return" = 2, "Run Both" = 3), defaults$schooling_adj), help_schooling_adj),
-    checkbox("apply_college_adj", "Apply College Share Adjustment", help_apply_college_adj),
-    field("college_coeff", "College Share Coefficient:", textInput(id("college_coeff"), NULL, defaults$college_coeff, placeholder = "0.75"), help_college_coeff)),
-    checkbox("mining_filter_active", "Filter by Mining Share", help_mining_filter_active),
-    field("mining_threshold", "Max Mining Share:", textInput(id("mining_threshold"), NULL, defaults$mining_threshold, placeholder = "0.01"), help_mining_threshold),
-    field("se_spec", "Standard Errors:", selectInput(id("se_spec"), NULL,
-      geography_standard_errors(level, if (level == "MSA") "overlap" else "max_density_overlap"), defaults$se_spec), help_se_spec),
-    conditionalPanel(paste0("input.", id("se_spec"), " == 'spatial'"),
-      field("spatial_cutoff", "Spatial Cutoff (km):", textInput(id("spatial_cutoff"), NULL, defaults$spatial_cutoff, placeholder = "100"), help_spatial_cutoff)),
-    if (level == "County") tagList(
-      div(class = "input-button-row", style = "margin-bottom:15px;",
+    if ("model" %in% section) tagList(
+      conditionalPanel("input.approach != 'employment'",
+        field("density_measure", "Density measure:",
+          selectInput(id("density_measure"), NULL, density_choices, "average"), help_state_ch)),
+      if (level == "MSA") conditionalPanel(msa_ch_condition,
+        state_adjustment_settings_ui("MSA", "model")),
+      field("sectors", "Sector:", selectInput(id("sectors"), NULL,
+        c("All" = 1, "Private" = 2, "Manufacturing" = 3, "Private non-farm" = 4, "Private non-farm/mining" = 5), defaults$sectors), help_sectors)),
+    if ("instrument" %in% section) tagList(
+      field("sample_year", "Year of the historical territory:", selectInput(id("sample_year"), NULL, historical_census_years, defaults$sample_year), help_sample_year),
+      field("iv_year", textOutput(id("iv_year_label"), inline = TRUE), selectInput(id("iv_year"), NULL, historical_census_years, defaults$iv_year), help_iv_year),
+      field("instrument_type", "Match of historical to modern units:",
+        selectInput(id("instrument_type"), NULL, geography_instrument_choices(level), if (level == "MSA") "overlap" else "max_density_overlap"),
+        if (level == "MSA") help_msa_instrument_type else help_county_instrument_type),
+      conditionalPanel(overlap_condition,
+        labeledInput(overlap_id, "Minimum Overlap (%):", selectInput(overlap_id, NULL, c(5,10,20,30,40,50,60,70,80,90), defaults$overlap),
+          paste0("help_", overlap_id), if (level == "MSA") help_msa_overlap_pct else help_county_overlap_threshold)),
+      if (level == "County") div(class = "input-button-row", style = "margin-bottom:15px;",
         checkboxInput("county_msa_restriction", "Restrict to counties in an MSA", value = FALSE),
-        pdf_help_button("help_county_msa_restriction", "Restrict to counties in an MSA")))
+        pdf_help_button("help_county_msa_restriction", "Restrict to counties in an MSA"))),
+    if ("controls" %in% section) tagList(
+      conditionalPanel(hc_condition,
+        h4("Schooling and college"),
+        field("schooling_adj", "Schooling adjustment to the outcome:", selectInput(id("schooling_adj"), NULL,
+          c("None" = 0, "Same Return" = 1, "Specific Return" = 2, "Run Both" = 3), defaults$schooling_adj), help_schooling_adj),
+        checkbox("apply_college_adj", "Apply college share adjustment", help_apply_college_adj),
+        conditionalPanel(paste0("input.", id("apply_college_adj"), " == true"),
+          field("college_coeff", "College share coefficient:", textInput(id("college_coeff"), NULL, defaults$college_coeff, placeholder = "0.75"), help_college_coeff))),
+      if (level == "MSA") conditionalPanel(paste0("!(", hc_condition, ")"),
+        div(class = "setting-status", tags$strong("Schooling and college"), tags$span("Inside the county CH contributions"))),
+      h4("Sample filter"),
+      checkbox("mining_filter_active", "Filter by mining share", help_mining_filter_active),
+      conditionalPanel(paste0("input.", id("mining_filter_active"), " == true"),
+        field("mining_threshold", "Maximum mining share:", textInput(id("mining_threshold"), NULL, defaults$mining_threshold, placeholder = "0.01"), help_mining_threshold)),
+      if (level == "MSA") conditionalPanel(msa_ch_condition,
+        state_adjustment_settings_ui("MSA", "controls"))),
+    if ("inference" %in% section) tagList(
+      field("se_spec", "Standard errors:", selectInput(id("se_spec"), NULL,
+        geography_standard_errors(level, if (level == "MSA") "overlap" else "max_density_overlap"), defaults$se_spec), help_se_spec),
+      conditionalPanel(paste0("input.", id("se_spec"), " == 'spatial'"),
+        field("spatial_cutoff", "Spatial cutoff (km):", textInput(id("spatial_cutoff"), NULL, defaults$spatial_cutoff, placeholder = "100"), help_spatial_cutoff)))
   )
 }
 
@@ -1256,6 +1265,29 @@ ui <- fluidPage(title = "Agglomeration Effects USA",
     .well h4{margin-top:19px;margin-bottom:14px;font-size:17px;font-family:Georgia,'Times New Roman',serif;color:#000;border-bottom:1px solid #ddd;padding-bottom:6px}
     .well h4:first-child{margin-top:0}
     .control-label{line-height:1.45}
+    input[type=radio]{accent-color:#007BFF}
+    .analysis-setup{padding-bottom:18px;border-bottom:1px solid #ddd;margin-bottom:18px}
+    #analysis_level .shiny-options-group{display:flex;gap:7px;padding-top:0}
+    #analysis_level .radio-inline{flex:1;margin:0;padding:8px 8px 8px 26px;border:1px solid #ccc;border-radius:3px;text-align:center}
+    #analysis_level .radio-inline:has(input:checked){color:#007BFF;border-color:#007BFF;background:#fff;font-weight:600}
+    #analysis_level .radio-inline input{margin-left:-18px}
+    #settings_section{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px;border:0;margin-bottom:18px}
+    #settings_section:before,#settings_section:after{display:none}
+    #settings_section>li{float:none;margin:0}
+    #settings_section>li:last-child{grid-column:1/-1}
+    #settings_section>li>a{height:100%;margin:0;padding:9px 7px;border:1px solid #ccc;border-radius:3px;color:#111;text-align:center;font-size:13px}
+    #settings_section>li>a:hover{background:#f5f5f5;border-color:#007BFF}
+    #settings_section>li.active>a{color:#007BFF;border-color:#007BFF;background:#fff;font-weight:600;box-shadow:inset 0 -2px #007BFF}
+    .settings-navigation .tab-pane>h4{margin-top:0}
+    .setting-status{margin:0 0 16px;font-size:13px;line-height:1.5}
+    .setting-status strong,.setting-status span{display:block}
+    .setting-status span{margin-top:3px}
+    .setting-value{flex:1;padding:8px 0}
+    .ch-index-options{border-left:2px solid #007BFF;padding-left:12px;margin-bottom:18px}
+    .ch-index-options .radio{margin-top:7px;margin-bottom:7px}
+    .calibration-status{font-size:13px;line-height:1.6;margin-bottom:16px}
+    .input-button-row>.shiny-input-radiogroup{min-width:0}
+
     .presentation-option{margin:10px 0 16px;font-size:13px}
     .presentation-option .checkbox{margin:0}
     .presentation-option .shiny-input-container{margin:0}
@@ -1314,97 +1346,104 @@ ui <- fluidPage(title = "Agglomeration Effects USA",
   
   sidebarLayout(
     sidebarPanel(width = 4,
-                 # ── 1. Master Configuration ───────────────────────────
-                 h4("1. Master Configuration"),
-                 labeledInput("analysis_level", "Select Analysis Level:",
-                              selectInput("analysis_level", NULL, c("MSA", "County", "State (Ciccone–Hall)" = "State")),
-                              "help_analysis_level", help_analysis_level),
-                 labeledInput("year_modern", "Select Modern Year:",
-                              selectInput("year_modern", NULL, seq(2022, 2001, -1), 2010),
-                              "help_year_modern", help_year_modern),
-                 div(style="margin-top:20px;", actionButton("run_analysis", "Run Analysis", icon=icon("play-circle"), class="btn-primary btn-lg", width="100%")),
-                 hr(),
-                 
-                 # Display options
-                 h4("Display Options ", pdf_help_button("help_display_options", "Display options and running an analysis")),
-                 checkboxInput("show_map", "Display Instrument Map", value = TRUE),
-                 checkboxInput("show_coefficient_chart", "Display Coefficient Chart", value = FALSE),
-                 conditionalPanel("input.show_map == true", sliderInput("map_size", "Map Size:", min = 25, max = 200, value = 75, post = "%")),
-                 hr(),
-                 
-                 # ── 2. Analysis Settings ───────────────────────────────
-                 h4("2. Analysis Settings"),
-                 conditionalPanel("input.analysis_level != 'State'",
-                 labeledInput("approach", "Approach:",
-                              selectInput("approach", NULL, c("Employment density" = "density", "Employment" = "employment"), "density"),
-                              "help_approach", help_approach)),
-                 labeledInput("analysis_type", "Analysis Method:",
-                              selectInput("analysis_type", NULL, c("IV", "OLS", "First-stage Regression"), "IV"),
-                              "help_analysis_type", help_analysis_type),
-                 conditionalPanel("input.analysis_level != 'State' || input.state_instrument_type != 'historical_ch'",
-                   labeledInput("instrument_form", "Historical instrument scale:",
-                     selectInput("instrument_form", NULL, c("Levels" = "levels", "Natural log" = "log"), "levels"),
-                     "help_instrument_form", help_instrument_form)),
-                 hr(),
-                 
-                 # ── 3. Fixed Effects & Sample Scope ───────────────────
-                 conditionalPanel("input.analysis_level == 'State'", h4("3. Historical Scope")),
-                 conditionalPanel("input.analysis_level != 'State'",
-                 h4("3. Fixed Effects & Sample Scope"),
-                 div(class="input-button-row", style="margin-bottom:10px;",
-                     checkboxInput("use_fe", "Use State Fixed Effects", value = TRUE),
-                     pdf_help_button("help_use_fe", "State fixed effects")),
-                 conditionalPanel("input.use_fe == true",
-                                  labeledInput("fe_type", "Fixed Effects Type:",
-                                               selectInput("fe_type", NULL, c("Historical"="historical", "Modern"="modern"), "historical"),
-                                               "help_fe_type", help_fe_type))),
-                 labeledInput("sample_scope", "Historical Territory:",
-                              selectInput("sample_scope", NULL, c("Historical States Only"="states_only", "Historical States & Territories"="states_territories"), "states_only"),
-                              "help_sample_scope", help_sample_scope),
-                 hr(),
-                 
-                 conditionalPanel("input.analysis_level == 'State'",
-                   h4("4. State Settings"),
-                   p(class = "help-block", "State estimates use all-industry log GDP per employment. A separate fixed effect for every state would absorb all variation. County-adjusted CH puts estimated county geography and transport effects inside the state index."),
-                   labeledInput("state_model", "Ciccone–Hall model:",
-                     p(class = "help-block", "State productivity and the density of employment in constituent counties."),
-                     "help_state_ch", help_state_ch),
-                   state_adjustment_settings_ui(),
-                   labeledInput("state_sample_year", "Year of the Historical Territory:",
-                     selectInput("state_sample_year", NULL, historical_census_years, 1900),
-                     "help_state_sample_year", help_sample_year),
-                   labeledInput("state_iv_year", "Historical Instrument Year:",
-                     selectInput("state_iv_year", NULL, historical_census_years, 1900),
-                     "help_state_iv_year", help_iv_year),
-                   labeledInput("state_instrument_type", "Match of Historical to Modern Geographic Units:",
-                     selectInput("state_instrument_type", NULL,
-                       c("Glaeser and Gottlieb (2009)" = "county_population", "Area-weighted population" = "area_population", "Historical CH density index" = "historical_ch"), "area_population"),
-                     "help_state_instrument_type", help_state_instrument)
-                 ),
-                 conditionalPanel("input.analysis_level == 'MSA'", geography_settings_ui("MSA")),
-                 conditionalPanel("input.analysis_level == 'County'", geography_settings_ui("County")),
-                 hr(),
-                 conditionalPanel("input.analysis_level != 'State' && !(input.analysis_level == 'MSA' && input.approach != 'employment' && input.msa_density_measure == 'CH' && input.msa_ch_mode == 'county_adjusted')",
-                 div(id = "geographic_controls_panel",
-                   h4("Geographic Controls"),
-                   p(class = "geo-control-note", "Control for physical geography and historical transport. Each box adds one or more separate variables to the regression. Use (?) for definitions and units."),
-                   conditionalPanel("input.analysis_level == 'MSA'", geography_transport_ui("MSA")),
-                   conditionalPanel("input.analysis_level == 'County'", geography_transport_ui("County")),
-                   labeledInput("geo_controls", "Terrain, Crop Suitability and Climate:",
-                     checkboxGroupInput("geo_controls", NULL,
-                       c("Ruggedness and Elevation" = "terrain", "Wheat and Maize Suitability" = "crop", "Temperature and Precipitation" = "climate"), selected = character()),
-                     "help_geo_controls", help_geo_controls),
-                   labeledInput("water_controls", "Separate Water Measures:",
-                     checkboxGroupInput("water_controls", NULL,
-                       c("Ocean and Great Lakes Access" = "shoreline", "Historical River and Canal Access" = "historical_access", "Distance to Shores and Waterways" = "distance", "Approximate Portage Access" = "portage"), selected = character()),
-                     "help_water_controls", help_water_controls),
-                   conditionalPanel("(input.water_controls || []).indexOf('historical_access') >= 0 || (input.water_controls || []).indexOf('distance') >= 0",
-                     labeledInput("water_year", "Waterway Reference Year:",
-                       selectInput("water_year", NULL, seq(1790, 1860, 10), 1820),
-                       "help_water_year", geographic_notes[["Waterway reference year"]])),
-                   p(class = "geo-control-note", "Terrain, crop, climate and the separate water measures cover the contiguous U.S. Missing selected values can reduce the regression sample."),
-                   tags$details(class = "geo-control-note", tags$summary("Coverage and sample size"), p(geographic_notes[["Coverage and sample size"]]))
-                 ))
+      div(class = "analysis-setup",
+        labeledInput("analysis_level", "Analysis level:",
+          radioButtons("analysis_level", NULL, c("County", "MSA", "State"), "MSA", inline = TRUE),
+          "help_analysis_level", help_analysis_level),
+        labeledInput("year_modern", "Modern year:",
+          selectInput("year_modern", NULL, seq(2022, 2001, -1), 2010),
+          "help_year_modern", help_year_modern),
+        actionButton("run_analysis", "Run analysis", icon = icon("play-circle"), class = "btn-primary", width = "100%")),
+      div(class = "settings-navigation",
+        tabsetPanel(id = "settings_section", selected = "model",
+          tabPanel("Model", value = "model",
+            h4("Model"),
+            conditionalPanel("input.analysis_level != 'State'",
+              labeledInput("approach", "Approach:",
+                selectInput("approach", NULL, c("Employment density" = "density", "Employment" = "employment"), "density"),
+                "help_approach", help_approach)),
+            conditionalPanel("input.analysis_level == 'MSA'", geography_settings_ui("MSA", "model")),
+            conditionalPanel("input.analysis_level == 'County'", geography_settings_ui("County", "model")),
+            conditionalPanel("input.analysis_level == 'State'",
+              labeledInput("state_model", "Density measure:",
+                div(class = "setting-value", "Ciccone–Hall index"), "help_state_ch", help_state_ch),
+              state_adjustment_settings_ui("State", "model"),
+              div(class = "setting-status", tags$strong("Sector"), tags$span("All industries"))),
+            labeledInput("analysis_type", "Estimation method:",
+              selectInput("analysis_type", NULL, c("IV", "OLS", "First-stage Regression"), "IV"),
+              "help_analysis_type", help_analysis_type)),
+          tabPanel("Historical instrument", value = "instrument",
+            h4("Historical sample and instrument"),
+            labeledInput("sample_scope", "Historical territory:",
+              selectInput("sample_scope", NULL, c("Historical States Only" = "states_only", "Historical States & Territories" = "states_territories"), "states_only"),
+              "help_sample_scope", help_sample_scope),
+            conditionalPanel("input.analysis_level == 'MSA'", geography_settings_ui("MSA", "instrument")),
+            conditionalPanel("input.analysis_level == 'County'", geography_settings_ui("County", "instrument")),
+            conditionalPanel("input.analysis_level == 'State'",
+              labeledInput("state_sample_year", "Year of the historical territory:",
+                selectInput("state_sample_year", NULL, historical_census_years, 1900),
+                "help_state_sample_year", help_sample_year),
+              labeledInput("state_iv_year", "Historical instrument year:",
+                selectInput("state_iv_year", NULL, historical_census_years, 1900),
+                "help_state_iv_year", help_iv_year),
+              labeledInput("state_instrument_type", "Match of historical to modern units:",
+                selectInput("state_instrument_type", NULL,
+                  c("Glaeser and Gottlieb (2009)" = "county_population", "Area-weighted population" = "area_population", "Historical CH density index" = "historical_ch"), "area_population"),
+                "help_state_instrument_type", help_state_instrument)),
+            conditionalPanel("input.analysis_level != 'State' || input.state_instrument_type != 'historical_ch'",
+              labeledInput("instrument_form", "Historical instrument scale:",
+                selectInput("instrument_form", NULL, c("Levels" = "levels", "Natural log" = "log"), "levels"),
+                "help_instrument_form", help_instrument_form))),
+          tabPanel("Controls", value = "controls",
+            h4("Regional fixed effects"),
+            conditionalPanel("input.analysis_level != 'State'",
+              div(class = "input-button-row", style = "margin-bottom:10px;",
+                checkboxInput("use_fe", "Use state fixed effects", value = TRUE),
+                pdf_help_button("help_use_fe", "State fixed effects")),
+              conditionalPanel("input.use_fe == true",
+                labeledInput("fe_type", "Fixed effects type:",
+                  selectInput("fe_type", NULL, c("Historical" = "historical", "Modern" = "modern"), "historical"),
+                  "help_fe_type", help_fe_type))),
+            conditionalPanel("input.analysis_level == 'State'",
+              div(class = "setting-status", tags$strong("State fixed effects"), tags$span("Not used in the State model")),
+              state_adjustment_settings_ui("State", "controls"),
+              conditionalPanel("input.state_ch_mode == 'standard'",
+                div(class = "setting-status", tags$strong("Standard CH"), tags$span("No additional controls")))),
+            conditionalPanel("input.analysis_level == 'MSA'", geography_settings_ui("MSA", "controls")),
+            conditionalPanel("input.analysis_level == 'County'", geography_settings_ui("County", "controls")),
+            conditionalPanel("input.analysis_level != 'State' && !(input.analysis_level == 'MSA' && input.approach != 'employment' && input.msa_density_measure == 'CH' && input.msa_ch_mode == 'county_adjusted')",
+              div(id = "geographic_controls_panel",
+                h4("Regional regression controls"),
+                labeledInput("geo_controls", "Terrain, crop suitability and climate:",
+                  checkboxGroupInput("geo_controls", NULL,
+                    c("Ruggedness and Elevation" = "terrain", "Wheat and Maize Suitability" = "crop", "Temperature and Precipitation" = "climate"), selected = character()),
+                  "help_geo_controls", help_geo_controls),
+                labeledInput("water_controls", "Separate water measures:",
+                  checkboxGroupInput("water_controls", NULL,
+                    c("Ocean and Great Lakes Access" = "shoreline", "Historical River and Canal Access" = "historical_access", "Distance to Shores and Waterways" = "distance", "Approximate Portage Access" = "portage"), selected = character()),
+                  "help_water_controls", help_water_controls),
+                conditionalPanel("input.analysis_level == 'MSA'", geography_transport_ui("MSA")),
+                conditionalPanel("input.analysis_level == 'County'", geography_transport_ui("County")),
+                conditionalPanel("(input.water_controls || []).indexOf('historical_access') >= 0 || (input.water_controls || []).indexOf('distance') >= 0",
+                  labeledInput("water_year", "Waterway reference year:",
+                    selectInput("water_year", NULL, seq(1790, 1860, 10), 1820),
+                    "help_water_year", geographic_notes[["Waterway reference year"]]))))),
+          tabPanel("Inference", value = "inference",
+            h4("Inference"),
+            conditionalPanel("input.analysis_level == 'MSA'", geography_settings_ui("MSA", "inference")),
+            conditionalPanel("input.analysis_level == 'County'", geography_settings_ui("County", "inference")),
+            conditionalPanel("input.analysis_level == 'State'",
+              conditionalPanel("input.state_ch_mode == 'standard'",
+                div(class = "setting-status", tags$strong("Standard errors"), tags$span("Robust"))),
+              conditionalPanel("input.state_ch_mode == 'county_adjusted'",
+                div(class = "setting-status", tags$strong("Standard errors"), tags$span("Joint state clustering"))))),
+          tabPanel("Display", value = "display",
+            h4("Display ", pdf_help_button("help_display_options", "Display options and running an analysis")),
+            checkboxInput("show_map", "Display instrument map", value = TRUE),
+            checkboxInput("show_coefficient_chart", "Display coefficient chart", value = FALSE),
+            conditionalPanel("input.show_map == true",
+              sliderInput("map_size", "Map size:", min = 25, max = 200, value = 75, post = "%"))))
+      )
     ), # sidebarPanel
     
     # Results
@@ -1435,9 +1474,6 @@ ui <- fluidPage(title = "Agglomeration Effects USA",
         div(class = "configuration-toggle", style = "margin: 16px 0;",
           actionButton("toggle_configuration", "Show regression configuration", icon = icon("list"), class = "btn-sm")),
         conditionalPanel("input.toggle_configuration % 2 == 1", htmlOutput("analysis_details"))),
-      conditionalPanel("input.run_analysis > 0",
-        tags$details(class = "data-notes-panel", tags$summary(textOutput("data_notes_heading", inline = TRUE)), uiOutput("data_notes"))
-      ),
       conditionalPanel(condition = "input.show_map == true", hr(), h3(textOutput("map_header")), uiOutput("map_ui"))
     )
   )

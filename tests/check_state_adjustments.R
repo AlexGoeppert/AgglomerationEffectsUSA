@@ -1,4 +1,4 @@
-# Integration checks use annual cached inputs for both county-adjusted CH tabs.
+# Integration checks use annual cached inputs for all county-adjusted CH modes.
 repo <- normalizePath(Sys.getenv("APP_REPO", unset="."), mustWork=TRUE)
 work <- Sys.getenv("APP_TEST_OUTPUT", unset=tempdir())
 dir.create(work,recursive=TRUE,showWarnings=FALSE)
@@ -33,7 +33,7 @@ record_parity <- function(result, label) {
   parity_records[[length(parity_records)+1L]] <<- data.frame(case=label,n=nobs(m),
     county_n=m$county_calibration$nobs,b=coef(m)[["ch_elasticity"]],
     se=sqrt(vcov(m)[1,1]),S=m$stock_wright$statistic,S_p=m$stock_wright$p_value,
-    county_b=m$county_calibration$coefficients[["county_elasticity"]],
+    county_b=if(isTRUE(m$county_calibration$calibrated)) m$county_calibration$coefficients[["county_elasticity"]] else NA_real_,
     beta=m$adjustment$beta_school,kappa=m$adjustment$kappa_college)
 }
 check_county_iv_identity <- function(prepared, model, label) {
@@ -60,9 +60,19 @@ check <- function(result) {
   for(name in names(result$models)) {
     m <- result$models[[name]]
     stopifnot(inherits(m,"ch_model"),all(is.finite(coef(m))),all(is.finite(vcov(m))),
-      m$county_calibration$calibrated,m$adjustment_mode %in% c("geography","both"),m$county_calibration$county_fe,
+      m$adjustment_mode %in% c("geography","both","human_capital"),
       is.null(m$anderson_rubin),!any(c("schooling","college") %in% names(m$county_calibration$coefficients)),
       isTRUE(all.equal(unname(m$full_covariance),unname(crossprod(m$state_influence)),tolerance=1e-10)))
+    if(m$adjustment_mode=="human_capital") {
+      stopifnot(!m$county_calibration$calibrated,identical(m$county_calibration$nobs,0L),
+        !m$county_calibration$county_fe,!length(m$county_calibration$coefficients),
+        !length(m$county_calibration$gamma),is.null(m$county_calibration$instrument_relevance),
+        !length(m$adjustment$geo_vars),!length(m$adjustment$county_controls_not_aggregated),
+        ncol(m$index_gamma_derivative)==0L,all(m$calibration_state_influence==0),
+        m$adjustment$beta_school==.10262306034564972,m$adjustment$kappa_college==.75)
+      if(result$analysis_type=="IV") stopifnot(!m$stock_wright$calibration_uncertainty,
+        !m$instrument_relevance$conditional_on_calibration)
+    } else stopifnot(m$county_calibration$calibrated,m$county_calibration$county_fe)
     if(result$analysis_type=="IV") stopifnot(m$stock_wright$status=="available",m$instrument_relevance$status=="available",abs(m$iv_moment)<1e-7)
     records[[length(records)+1L]] <<- data.frame(level=result$analysis_level,year=result$year_modern,
       model=name,adjustment=m$adjustment_mode,method=result$analysis_type,n=nobs(m),county_n=m$county_calibration$nobs,
@@ -99,6 +109,42 @@ check_county_iv_identity(app$prepare_county_geography(state_no_area_input,combin
 state_default <- state_no_area_input
 state_default$state_county_area <- NULL
 stopifnot(identical(coef(app$state_ch_result(state_default,app$state_data)$models[[1]]),coef(combined_state_no_area$models[[1]])))
+state_hc_input <- modifyList(settings,list(state_adjustment_mode="human_capital",state_county_area=FALSE))
+state_hc <- app$state_ch_result(state_hc_input,app$state_data)
+check(state_hc)
+record_parity(state_hc,"state_human_capital_area_off")
+stopifnot(length(state_hc$models)==1L,state_hc$schooling_adj==0L,!state_hc$apply_college_adj,
+  state_hc$fe_part=="0",nobs(state_hc$models[[1]])>=nobs(combined_state_no_area$models[[1]]),
+  !length(state_hc$county_geo_vars),is.na(state_hc$water_year),
+  is.na(state_hc$county_calibration_instrument),!length(state_hc$geo_controls),!length(state_hc$water_controls))
+check(app$state_ch_result(modifyList(state_hc_input,list(analysis_type="OLS")),app$state_data))
+state_hc_states <- app$state_ch_result(modifyList(state_hc_input,list(sample_scope="states_only")),app$state_data)
+check(state_hc_states)
+stopifnot(state_hc_states$sample_scope=="states_only",
+  all(state_hc_states$models[[1]]$state_ids %in% as.character(state_hc_states$data_for_fs$state_id)))
+check(app$state_ch_result(modifyList(state_hc_input,list(state_instrument_type="historical_ch")),app$state_data))
+state_hc_hidden <- modifyList(state_hc_input,list(state_county_area=TRUE,
+  state_county_instrument="unused",state_geo_controls="unused",state_water_controls="unused",
+  state_transport_controls="unused",state_water_year="unused",msa_schooling_adj="3",
+  msa_apply_college_adj=TRUE,msa_college_coeff="2",use_fe=TRUE,fe_type="historical"))
+state_hc_unchanged <- app$state_ch_result(state_hc_hidden,app$state_data)
+stopifnot(identical(coef(state_hc$models[[1]]),coef(state_hc_unchanged$models[[1]])),
+  identical(vcov(state_hc$models[[1]]),vcov(state_hc_unchanged$models[[1]])))
+
+# State schooling and college preparation never loads the county calibration
+# panel and works when the static input omits every geography field.
+original_year_loader <- app$get_app_year
+original_hc_static <- app$get_state_adjustment_inputs
+hc_static <- as.data.frame(original_hc_static())
+hc_static <- hc_static[c("geofips","statefips","ch_slot","ac","simple_gamma","avg_schooling_10_14","college_share")]
+app$get_app_year <- function(...) stop("County calibration data must not be loaded.")
+app$get_state_adjustment_inputs <- function(...) hc_static
+hc_prepared <- app$prepare_county_geography(state_hc_hidden,state_hc$data_for_fs)
+stopifnot(nrow(hc_prepared$county)==0L,!length(hc_prepared$geo_vars),
+  !hc_prepared$settings$county_fe,!length(hc_prepared$settings$county_controls),
+  is.na(hc_prepared$construction),is.na(hc_prepared$water_year))
+app$get_app_year <- original_year_loader
+app$get_state_adjustment_inputs <- original_hc_static
 original_static <- app$get_state_adjustment_inputs
 static <- as.data.frame(original_static())
 static$avg_schooling_10_14 <- static$college_share <- NA_real_
@@ -113,8 +159,11 @@ missing <- app$state_ch_result(settings,app$state_data)
 stopifnot(nobs(missing$models[[1]])==nobs(baseline$models[[1]])-1,!selected %in% missing$models[[1]]$county_calibration$states)
 app$get_state_adjustment_inputs <- original_static
 ui <- htmltools::renderTags(app$ui)$html
+ui_conditions <- gsub("&#39;","'",ui,fixed=TRUE)
 stopifnot(grepl('id="state_ch_mode"',ui,fixed=TRUE),grepl('id="msa_ch_mode"',ui,fixed=TRUE),
-  grepl('id="state_adjustment_mode"',ui,fixed=TRUE),grepl('id="msa_adjustment_mode"',ui,fixed=TRUE))
+  grepl('id="state_adjustment_mode"',ui,fixed=TRUE),grepl('id="msa_adjustment_mode"',ui,fixed=TRUE),
+  grepl("input.state_adjustment_mode != 'human_capital'",ui_conditions,fixed=TRUE),
+  grepl("input.msa_adjustment_mode != 'human_capital'",ui_conditions,fixed=TRUE))
 msa <- list(analysis_level="MSA",msa_density_measure="CH",msa_ch_mode="county_adjusted",msa_sectors="1",
   msa_sample_year="1900",msa_iv_year="1900",msa_instrument_type="area_population",msa_overlap_pct="5",
   msa_controls=c("water_1820","railroads_1840"),msa_schooling_adj="3",msa_apply_college_adj=TRUE,
@@ -190,8 +239,56 @@ shiny::testServer(app$server, {
   session$setInputs(analysis_type="OLS",run_analysis=7L)
   session$flushReact()
   check(isolate(analysis_output()))
+
+  session$setInputs(msa_adjustment_mode="human_capital",msa_county_area=FALSE,
+    analysis_type="IV",msa_se_spec="cluster_instrument",use_fe=TRUE,fe_type="modern",run_analysis=8L)
+  session$flushReact()
+  hc_msa <- isolate(analysis_output()); check(hc_msa)
+  record_parity(hc_msa,"msa_human_capital_state_id_area_off")
+  stopifnot(length(hc_msa$models)==1L,hc_msa$schooling_adj==0L,!hc_msa$apply_college_adj,
+    hc_msa$fe_part=="state_id",identical(hc_msa$data_for_fs$LHS,hc_msa$data_for_fs$ln_output_worker),
+    nobs(hc_msa$models[[1]])>=nobs(combined$models[[1]]),!length(hc_msa$county_geo_vars),
+    is.na(hc_msa$county_water_year),is.na(hc_msa$county_calibration_instrument))
+  hc_html <- output$results_table$html
+  stopifnot(grepl("Schooling and college",hc_html,fixed=TRUE),
+    !grepl("County calibration observations",hc_html,fixed=TRUE),
+    !grepl("County calibration instrument F",hc_html,fixed=TRUE))
+  hc_csv <- read.csv(output$download_coefficients)
+  stopifnot(all(hc_csv$county_adjustment=="human_capital"),all(hc_csv$human_capital_inside_ch),
+    all(hc_csv$county_schooling_return>0),all(hc_csv$county_college_coefficient==.75),
+    all(hc_csv$schooling_adjustment=="None"),!any(hc_csv$college_adjustment),
+    all(hc_csv$county_calibration_n==0L),all(is.na(hc_csv$county_calibration_method)),
+    all(is.na(hc_csv$county_calibration_instrument)),all(is.na(hc_csv$county_calibration_scale)),
+    all(is.na(hc_csv$county_density_regressor)),all(is.na(hc_csv$county_water_year)),
+    !any(hc_csv$county_log_area_control),all(is.na(hc_csv$county_geography_variables)|hc_csv$county_geography_variables==""))
+  hc_saved <- paste(readLines(output$download_results,warn=FALSE),collapse="\n")
+  stopifnot(grepl("Schooling and college",hc_saved,fixed=TRUE),
+    !grepl("County calibration instrument F",hc_saved,fixed=TRUE))
+
+  # Hidden county calibration, geography, transport and outcome-adjustment
+  # settings must leave coefficients, sample and covariance unchanged.
+  session$setInputs(msa_schooling_adj="3",msa_apply_college_adj=TRUE,msa_college_coeff="2",
+    msa_county_area=TRUE,msa_county_instrument="unused",msa_geo_controls="unused",
+    msa_water_controls="unused",msa_transport_controls="unused",msa_water_year="unused",
+    geo_controls=c("terrain","climate"),water_controls=c("distance","portage"),
+    water_year="1790",msa_controls="railroads_1861",run_analysis=9L)
+  session$flushReact()
+  hc_hidden <- isolate(analysis_output()); check(hc_hidden)
+  stopifnot(identical(coef(hc_msa$models[[1]]),coef(hc_hidden$models[[1]])),
+    identical(vcov(hc_msa$models[[1]]),vcov(hc_hidden$models[[1]])),
+    identical(hc_msa$models[[1]]$region_ids,hc_hidden$models[[1]]$region_ids))
+  session$setInputs(use_fe=FALSE,msa_county_area=FALSE,run_analysis=10L)
+  session$flushReact()
+  hc_no_fe <- isolate(analysis_output()); check(hc_no_fe)
+  stopifnot(hc_no_fe$fe_part=="0")
+  record_parity(hc_no_fe,"msa_human_capital_0_area_off")
+  session$setInputs(use_fe=TRUE,analysis_type="OLS",run_analysis=11L)
+  session$flushReact()
+  hc_ols <- isolate(analysis_output()); check(hc_ols)
+  stopifnot(hc_ols$fe_part=="state_id",is.null(hc_ols$models[[1]]$stock_wright),
+    is.null(hc_ols$models[[1]]$county_calibration$instrument_relevance))
 })
 write.csv(do.call(rbind,records),file.path(work,"state_adjustment_checks.csv"),row.names=FALSE)
 write.csv(do.call(rbind,identity_records),file.path(work,"county_iv_estimator_identity.csv"),row.names=FALSE)
 write.csv(do.call(rbind,parity_records),file.path(work,"combined_production_parity.csv"),row.names=FALSE)
-cat("County geography and geography + human capital CH integration checks passed.\n")
+cat("County geography, schooling and college, and combined CH integration checks passed.\n")

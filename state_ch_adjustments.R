@@ -1,5 +1,5 @@
-# County geography effects enter before MSA or state CH aggregation.
-# The combined mode also places fixed schooling and college effects in the index.
+# County productivity effects enter before MSA or state CH aggregation.
+# Geography is estimated; schooling and college use fixed coefficients.
 
 sca_design <- function(data, controls = character(), fe = NULL, prefix = ".fe_") {
   if (is.null(fe) || identical(fe, "0")) {
@@ -114,7 +114,7 @@ sca_county_fit <- function(county, geo_vars, nuisance, method, county_fe = TRUE)
 
 sca_human_capital <- function(data, mode, beta_school, kappa_college, schooling_reference) {
   h <- college_effect <- rep(0, nrow(data))
-  if (mode == "both") {
+  if (mode %in% c("both", "human_capital")) {
     required <- c(if (beta_school != 0) "schooling", if (kappa_college != 0) "college")
     sca_complete(data, required)
     if (beta_school != 0) h <- beta_school * (data$schooling - schooling_reference)
@@ -126,6 +126,7 @@ sca_human_capital <- function(data, mode, beta_school, kappa_college, schooling_
 sca_make_index <- function(components, state_levels, geo_vars, gamma, mode = "geography",
                            beta_school = .10262306034564972, kappa_college = .75,
                            schooling_reference = 0) {
+  if (mode == "human_capital") geo_vars <- character()
   # Zero-employment counties remain in the membership check, but have no
   # contribution to the index and need no productivity shifter.
   components <- components[components$employment > 0, , drop = FALSE]
@@ -177,7 +178,7 @@ sca_s_test <- function(y, z, W, terms, gamma_influence, cluster, cluster_levels)
        calibration_uncertainty = ncol(gamma_influence) > 0L, moment = moment, score = score,
        note = if (ncol(gamma_influence) > 0L)
          "Adjusted-null S test includes the county geography calibration; validity also requires a regularly identified county calibration." else
-         "The zero-elasticity S test uses the geography-adjusted index at theta = 1.")
+         "The zero-elasticity S test uses the adjusted CH index at theta = 1.")
 }
 
 fit_state_adjusted_ch <- function(data, county, components, settings = list()) {
@@ -187,21 +188,22 @@ fit_state_adjusted_ch <- function(data, county, components, settings = list()) {
     beta_school = .10262306034564972, kappa_college = .75, schooling_reference = 0)
   for (name in names(defaults)) if (is.null(settings[[name]])) settings[[name]] <- defaults[[name]]
   method <- match.arg(settings$method, c("IV", "OLS"))
-  mode <- match.arg(settings$mode, c("geography", "both"))
+  mode <- match.arg(settings$mode, c("geography", "both", "human_capital"))
+  calibrate_geography <- mode != "human_capital"
   for (name in c("beta_school", "kappa_college", "schooling_reference")) {
     value <- settings[[name]]
     if (!is.numeric(value) || length(value) != 1L || !is.finite(value))
       stop(paste("The fixed human-capital setting must be one finite number:", name))
   }
-  beta_school <- if (mode == "both") settings$beta_school else 0
-  kappa_college <- if (mode == "both") settings$kappa_college else 0
+  beta_school <- if (mode %in% c("both", "human_capital")) settings$beta_school else 0
+  kappa_college <- if (mode %in% c("both", "human_capital")) settings$kappa_college else 0
   hc_vars <- c(if (beta_school != 0) "schooling", if (kappa_college != 0) "college")
-  geo_vars <- unique(settings$geo_vars)
-  if (!length(geo_vars)) stop("Select at least one geography or transport control for the county adjustment.")
+  geo_vars <- if (calibrate_geography) unique(settings$geo_vars) else character()
+  if (calibrate_geography && !length(geo_vars)) stop("Select at least one geography or transport control for the county adjustment.")
   if (!"region_id" %in% names(data)) data$region_id <- data$state_id
   if (!"region_id" %in% names(components)) components$region_id <- components$state_id
   if (!"joint_cluster" %in% names(data)) data$joint_cluster <- data$state_id
-  if (!"joint_cluster" %in% names(county)) county$joint_cluster <- county$state_id
+  if (calibrate_geography && !"joint_cluster" %in% names(county)) county$joint_cluster <- county$state_id
   if (anyDuplicated(as.character(data$region_id))) stop("CH estimation requires one row per region.")
   if (anyDuplicated(paste(components$region_id, components$county_id, sep = ":")))
     stop("CH components contain repeated county identifiers within a region.")
@@ -209,7 +211,8 @@ fit_state_adjusted_ch <- function(data, county, components, settings = list()) {
     if (settings$state_fe != "0") settings$state_fe, if (method == "IV") "instrument")
   valid <- sca_complete(data, required)
   if ("ch_complete" %in% names(data)) valid <- valid & !is.na(data$ch_complete) & data$ch_complete == 1
-  complete_component <- sca_complete(components, c("region_id", "state_id", "county_id", "employment", "area")) &
+  complete_component <- sca_complete(components, c("region_id", "county_id", "employment", "area",
+    if (calibrate_geography) "state_id")) &
     components$employment >= 0 & components$area > 0 &
     (components$employment == 0 | sca_complete(components, c(geo_vars, hc_vars)))
   bad_states <- unique(as.character(components$region_id[!complete_component]))
@@ -221,11 +224,20 @@ fit_state_adjusted_ch <- function(data, county, components, settings = list()) {
   if (nrow(d) < 3L) stop("Fewer than three regions have complete components and selected adjustment inputs.")
   state_levels <- as.character(d$region_id)
   components <- components[as.character(components$region_id) %in% state_levels, , drop = FALSE]
-  # All constituent states contribute calibration counties, including nonmetro counties.
-  county <- county[as.character(county$state_id) %in% unique(as.character(components$state_id)), , drop = FALSE]
-  hc <- sca_human_capital(county, mode, beta_school, kappa_college, settings$schooling_reference)
-  county$y <- county$y - hc$h - hc$college_effect
-  calibration <- sca_county_fit(county, geo_vars, settings$county_controls, method, isTRUE(settings$county_fe))
+  if (calibrate_geography) {
+    # All constituent states contribute calibration counties, including nonmetro counties.
+    county <- county[as.character(county$state_id) %in% unique(as.character(components$state_id)), , drop = FALSE]
+    hc <- sca_human_capital(county, mode, beta_school, kappa_college, settings$schooling_reference)
+    county$y <- county$y - hc$h - hc$college_effect
+    calibration <- sca_county_fit(county, geo_vars, settings$county_controls, method, isTRUE(settings$county_fe))
+  } else {
+    empty <- matrix(numeric(), 0L, 0L)
+    calibration <- list(calibrated = FALSE, coefficients = numeric(), covariance = empty,
+      gamma = numeric(), gamma_influence = empty, influence = empty, residuals = numeric(),
+      nobs = 0L, states = character(), county_ids = character(), method = NA_character_,
+      geo_vars = character(), nuisance = character(), observation_influence = empty,
+      joint_cluster = character(), county_fe = FALSE, instrument_relevance = NULL)
+  }
   calibration$human_capital <- list(mode = mode, beta_school = beta_school,
     kappa_college = kappa_college, schooling_reference = settings$schooling_reference,
     coefficients_fixed = TRUE)
@@ -233,7 +245,8 @@ fit_state_adjusted_ch <- function(data, county, components, settings = list()) {
   if (length(unique(d$joint_cluster)) < 3L)
     stop("Fewer than three independent aggregate clusters remain. Choose a wider sample or a different clustering specification.")
   gamma_influence <- matrix(0, length(cluster_levels), length(geo_vars), dimnames = list(cluster_levels, geo_vars))
-  gamma_influence[match(rownames(calibration$gamma_influence), cluster_levels), ] <- calibration$gamma_influence
+  if (calibrate_geography)
+    gamma_influence[match(rownames(calibration$gamma_influence), cluster_levels), ] <- calibration$gamma_influence
   index <- sca_make_index(components, state_levels, geo_vars, calibration$gamma, mode,
     beta_school, kappa_college, settings$schooling_reference)
   W <- sca_design(d, settings$state_controls, if (settings$state_fe == "0") NULL else settings$state_fe)
@@ -310,6 +323,7 @@ fit_state_adjusted_ch <- function(data, county, components, settings = list()) {
   full_coef <- c(ch_elasticity = theta - 1, beta)
   exposed <- !startsWith(names(full_coef), ".fe_")
   instrument_relevance <- if (method == "IV") sca_relevance(terms$derivative, d$instrument, W, d$joint_cluster, theta) else NULL
+  if (!is.null(instrument_relevance)) instrument_relevance$conditional_on_calibration <- calibrate_geography
   excluded <- data.frame(state_id = as.character(data$region_id[!valid]),
     reason = ifelse(as.character(data$region_id[!valid]) %in% bad_states,
       "At least one county component is missing a selected adjustment input.",
@@ -320,8 +334,10 @@ fit_state_adjusted_ch <- function(data, county, components, settings = list()) {
     nobs = as.integer(n), df.residual = Inf, parameter_count = k, method = method,
     se_spec = settings$se_spec, clusters = as.integer(length(unique(d$joint_cluster))), collin.var = character(), singleton_n = 0L,
     stock_wright = stock_wright, anderson_rubin = NULL, instrument_relevance = instrument_relevance,
-    inference = paste("Joint CR0 covariance includes county geography estimation and shared county/aggregate observations; asymptotic normal inference.",
-      if (mode == "both") "Schooling and college effects enter the county index with fixed coefficients; their calibration uncertainty is not estimated."
+    inference = paste(if (calibrate_geography)
+      "Joint CR0 covariance includes county geography estimation and shared county/aggregate observations; asymptotic normal inference." else
+      "Aggregate CR0 covariance with asymptotic normal inference; no county geography calibration is used.",
+      if (mode %in% c("both", "human_capital")) "Schooling and college effects enter the county index with fixed coefficients; their calibration uncertainty is not estimated."
       else "Human capital, when selected, adjusts only the aggregate outcome."),
     full_coefficients = full_coef, full_covariance = full_vcov,
     index_value = terms$value, index_derivative = terms$derivative,
@@ -330,7 +346,7 @@ fit_state_adjusted_ch <- function(data, county, components, settings = list()) {
     adjustment = list(mode = mode, geo_vars = geo_vars, beta_school = beta_school,
       kappa_college = kappa_college, schooling_reference = settings$schooling_reference,
       human_capital_coefficients_fixed = TRUE,
-      county_instrument_label = settings$county_instrument_label,
+      county_instrument_label = if (calibrate_geography) settings$county_instrument_label else NA_character_,
       county_controls_not_aggregated = calibration$nuisance,
       county_fe_not_aggregated = calibration$county_fe),
     state_ids = state_levels, region_ids = state_levels, joint_cluster_levels = cluster_levels, state_influence = influence,

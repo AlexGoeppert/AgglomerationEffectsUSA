@@ -62,9 +62,9 @@ local({
       stopifnot(identical(topics(paste0(level, "_help_county_instrument"), settings)[1],
         if (method == "county_population") "05" else "06"))
     }
-    for (mode in c("geography", "both")) {
+    for (mode in c("geography", "human_capital", "both")) {
       settings <- setNames(list("county_adjusted", mode), paste0(level, c("_ch_mode", "_adjustment_mode")))
-      expected <- if (mode == "both") "13" else "12"
+      expected <- if (mode %in% c("human_capital", "both")) "13" else "12"
       stopifnot(identical(topics(paste0(level, "_help_ch_mode"), settings)[1], expected),
         identical(topics(paste0(level, "_help_adjustment_mode"), settings)[1], expected))
     }
@@ -133,6 +133,11 @@ local({
     assert_document("12")
     session$setInputs(msa_help_ch_mode = 3L)
     assert_document("13")
+    session$setInputs(state_adjustment_mode = "human_capital", state_help_adjustment_mode = 2L)
+    assert_document("13")
+    session$setInputs(msa_adjustment_mode = "human_capital", msa_help_adjustment_mode = 2L)
+    assert_document("13")
+    session$setInputs(msa_adjustment_mode = "both")
     session$setInputs(water_controls = c("distance", "portage"), help_water_controls = 2L)
     assert_document("16")
     session$setInputs(pdf_help_topic = "15")

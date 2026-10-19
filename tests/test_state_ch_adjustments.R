@@ -296,3 +296,131 @@ msa_both_missing$college[1] <- NA_real_
 msa_both_missing_fit <- fit_state_adjusted_ch(msa_both_data, msa_county, msa_both_missing, msa_both_settings)
 stopifnot(msa_both_missing_fit$nobs == 30L, !"1" %in% msa_both_missing_fit$region_ids)
 cat("Combined county geography, schooling and college CH checks passed.\n")
+
+# Schooling and college use fixed county productivity effects without fitting
+# any county regression or requiring geography and county calibration inputs.
+hc_settings <- list(mode = "human_capital")
+hc_parts <- components[c("region_id", "county_id", "employment", "area", "schooling", "college")]
+hc_index <- sca_make_index(hc_parts, state_levels, character(), numeric(), "human_capital")
+beta_hc <- .10262306034564972
+kappa_hc <- .75
+hc_direct <- function(theta) vapply(seq_len(S), function(s) {
+  a <- hc_parts[hc_parts$region_id == s, ]
+  log(sum(exp(beta_hc * a$schooling + kappa_hc * a$college) *
+    a$employment^theta * a$area^(1 - theta)) / sum(a$employment))
+}, numeric(1))
+close_enough(hc_index(t)$value, hc_direct(t))
+close_enough(hc_index(t)$derivative, (hc_direct(t + h) - hc_direct(t - h)) / (2 * h))
+close_enough(hc_index(t)$second_derivative,
+  (hc_index(t + h)$derivative - hc_index(t - h)$derivative) / (2 * h))
+stopifnot(identical(dim(hc_index(t)$gamma_derivative), c(S, 0L)),
+  identical(dim(hc_index(t)$mixed_derivative), c(S, 0L)))
+
+# Heterogeneous county schooling and college stay inside the sum. Replacing
+# them by the region's employment-weighted mean does not give the same index.
+ordinary_index <- sca_make_index(hc_parts, state_levels, character(), numeric())
+average_hc <- vapply(seq_len(S), function(s) {
+  a <- hc_parts[hc_parts$region_id == s, ]
+  weighted.mean(beta_hc * a$schooling + kappa_hc * a$college, a$employment)
+}, numeric(1))
+stopifnot(max(abs(hc_index(t)$value - ordinary_index(t)$value - average_hc)) > 1e-4)
+hc_single <- sca_make_index(hc_parts[!duplicated(hc_parts$region_id), ],
+  state_levels, character(), numeric(), "human_capital")
+close_enough(hc_single(t)$value, beta_hc * single_parts$schooling +
+  kappa_hc * single_parts$college + (t - 1) * single_log_density)
+close_enough(hc_single(t)$derivative, single_log_density)
+
+hc_data <- d
+hc_data$LHS <- 10 + hc_index(1.09)$value + rnorm(S, sd = .025)
+irrelevant <- list(geo_vars = "missing_geography", county_controls = "missing_area",
+  county_fe = TRUE, county_instrument_label = "Unused population measure")
+for (method in c("IV", "OLS")) {
+  specification <- modifyList(hc_settings, list(method = method))
+  current <- fit_state_adjusted_ch(hc_data, NULL, hc_parts, specification)
+  unused_county <- data.frame(county_id = c(1L, 1L), state_id = NA_character_, y = NA_real_)
+  unchanged <- fit_state_adjusted_ch(hc_data, unused_county, hc_parts,
+    modifyList(specification, irrelevant))
+  close_enough(current$full_coefficients, unchanged$full_coefficients)
+  close_enough(current$full_covariance, unchanged$full_covariance)
+  stopifnot(current$nobs == S, !current$county_calibration$calibrated,
+    identical(current$county_calibration$nobs, 0L),
+    is.null(current$county_calibration$instrument_relevance),
+    !length(current$county_calibration$coefficients), !length(current$county_calibration$gamma),
+    !length(current$adjustment$geo_vars), !current$adjustment$county_fe_not_aggregated,
+    !length(current$adjustment$county_controls_not_aggregated),
+    is.na(current$adjustment$county_instrument_label),
+    all(current$calibration_state_influence == 0),
+    identical(dim(current$index_gamma_derivative), c(S, 0L)))
+  close_enough(current$full_covariance, crossprod(current$direct_state_influence))
+  close_enough(current$index_value, hc_direct(current$theta))
+  close_enough(current$null_index_value, hc_direct(1))
+
+  shifted <- hc_data
+  shifted$LHS[s] <- shifted$LHS[s] + epsilon * current$residuals[s]
+  refit <- fit_state_adjusted_ch(shifted, NULL, hc_parts, specification)
+  close_enough((refit$full_coefficients - current$full_coefficients) / epsilon,
+    current$state_influence[as.character(s), ], if (method == "IV") 2e-5 else 3e-4)
+
+  centered <- fit_state_adjusted_ch(hc_data, NULL, hc_parts,
+    modifyList(specification, list(schooling_reference = 12)))
+  close_enough(centered$theta, current$theta)
+  close_enough(centered$full_covariance, current$full_covariance)
+  close_enough(centered$full_coefficients["(Intercept)"],
+    current$full_coefficients["(Intercept)"] + 12 * beta_hc)
+  if (method == "IV") {
+    close_enough(current$iv_moment, 0)
+    stopifnot(!current$instrument_relevance$conditional_on_calibration,
+      !current$stock_wright$calibration_uncertainty)
+    residual0 <- hc_data$LHS - hc_direct(1)
+    residual0 <- residual0 - mean(residual0)
+    close_enough(current$stock_wright$statistic,
+      sum(zr * residual0)^2 / sum((zr * residual0)^2))
+    unadjusted_s <- sum(zr * hc_data$LHS)^2 /
+      sum((zr * (hc_data$LHS - mean(hc_data$LHS)))^2)
+    stopifnot(abs(current$stock_wright$statistic - unadjusted_s) > 1e-3)
+  } else stopifnot(is.null(current$stock_wright))
+}
+
+# A missing required HC input drops the whole region. Zero employment has no
+# weight and needs no HC value. Missing geography never affects this sample.
+for (variable in c("schooling", "college")) {
+  missing_hc <- hc_parts
+  missing_hc[[variable]][1] <- NA_real_
+  reduced <- fit_state_adjusted_ch(hc_data, NULL, missing_hc, hc_settings)
+  stopifnot(reduced$nobs == S - 1L, !"1" %in% reduced$region_ids)
+  missing_hc$employment[1] <- 0
+  retained <- fit_state_adjusted_ch(hc_data, NULL, missing_hc, hc_settings)
+  stopifnot(retained$nobs == S)
+}
+
+# Zero fixed coefficients give the unadjusted CH formula on the same complete
+# component sample, and missing unused education columns cause no exclusions.
+no_hc_parts <- hc_parts[!names(hc_parts) %in% c("schooling", "college")]
+zero_index <- sca_make_index(no_hc_parts, state_levels, character(), numeric(),
+  "human_capital", beta_school = 0, kappa_college = 0)
+close_enough(zero_index(t)$value, ordinary_index(t)$value)
+close_enough(zero_index(t)$derivative, ordinary_index(t)$derivative)
+zero_data <- d
+zero_data$LHS <- 10 + ordinary_index(1.09)$value
+for (method in c("IV", "OLS")) {
+  zero_fit <- fit_state_adjusted_ch(zero_data, NULL, no_hc_parts,
+    list(mode = "human_capital", method = method, beta_school = 0, kappa_college = 0))
+  stopifnot(zero_fit$nobs == S)
+  close_enough(zero_fit$theta, 1.09)
+  close_enough(zero_fit$full_coefficients["(Intercept)"], 10)
+}
+
+# MSA state fixed effects and cross-state county membership use the same
+# aggregate path without calibration clusters outside the retained MSAs.
+msa_hc_parts <- msa_parts
+msa_hc_parts$geo <- NA_real_
+msa_hc_index <- sca_make_index(msa_hc_parts, as.character(seq_len(31)),
+  "geo", NA_real_, "human_capital")
+msa_hc_data <- msa
+msa_hc_data$LHS <- 10 + msa_hc_index(1.1)$value + rnorm(31, sd = .01)
+msa_hc_fit <- fit_state_adjusted_ch(msa_hc_data, msa_county, msa_hc_parts,
+  list(mode = "human_capital", state_fe = "state_id", geo_vars = "geo"))
+stopifnot(msa_hc_fit$nobs == 31L, !"m32" %in% msa_hc_fit$joint_cluster_levels,
+  identical(msa_hc_fit$county_calibration$nobs, 0L))
+close_enough(msa_hc_fit$full_covariance, crossprod(msa_hc_fit$direct_state_influence))
+cat("Schooling and college CH checks passed.\n")

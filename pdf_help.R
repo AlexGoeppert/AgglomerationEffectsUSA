@@ -67,9 +67,9 @@ pdf_help_button_topics <- function(help_id, values = list()) {
     return(if (identical(values[[control]], "CH")) c("10", "01") else c("01", "10"))
   if (binding %in% c("ch", "adjustment")) {
     mode <- values[[paste0(level, "_ch_mode")]]
-    combined <- identical(values[[paste0(level, "_adjustment_mode")]], "both")
+    human_capital <- values[[paste0(level, "_adjustment_mode")]] %in% c("human_capital", "both")
     if (binding == "ch" && !identical(mode, "county_adjusted")) return(c("10", "12", "13"))
-    return(if (combined) c("13", "12", "10") else c("12", "13", "10"))
+    return(if (isTRUE(human_capital)) c("13", "12", "10") else c("12", "13", "10"))
   }
   if (binding == "water") {
     selected <- values[[control]]

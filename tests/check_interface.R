@@ -119,17 +119,20 @@ local({
       !grepl("checked", input_tag(html, paste0(prefix, "county_area")), fixed = TRUE),
       identical(selected_value(html, paste0(prefix, "water_year")), "1820"),
       grepl(paste0('id="', prefix, 'adjustment_mode"'), html, fixed = TRUE),
-      identical(radio_values(html, paste0(prefix, "adjustment_mode")), c("geography", "both")),
+      identical(radio_values(html, paste0(prefix, "adjustment_mode")), c("geography", "human_capital", "both")),
       identical(radio_selected(html, paste0(prefix, "adjustment_mode")), "geography"),
       grepl("Geography + schooling and college", html, fixed = TRUE),
+      grepl(">Schooling and college</span>", html, fixed = TRUE),
+      !grepl("Schooling and college only", html, fixed = TRUE),
       !grepl(paste0('id="', prefix, 'schooling_efficiency"'), html, fixed = TRUE))
     index_model <- htmltools::renderTags(app$state_adjustment_settings_ui(level, section = "model"))$html
     index_controls <- htmltools::renderTags(app$state_adjustment_settings_ui(level, section = "controls"))$html
     stopifnot(identical(radio_values(index_model, paste0(prefix, "ch_mode")), c("standard", "county_adjusted")),
-      identical(radio_values(index_model, paste0(prefix, "adjustment_mode")), c("geography", "both")),
+      identical(radio_values(index_model, paste0(prefix, "adjustment_mode")), c("geography", "human_capital", "both")),
       !grepl(paste0('id="', prefix, 'county_instrument"'), index_model, fixed = TRUE),
       !grepl(paste0('id="', prefix, 'ch_mode"'), index_controls, fixed = TRUE),
       grepl(paste0('id="', prefix, 'county_instrument"'), index_controls, fixed = TRUE),
+      grepl(paste0("input.", prefix, "adjustment_mode != &#39;human_capital&#39;"), index_controls, fixed = TRUE),
       !grepl("<p", paste(index_model, index_controls), fixed = TRUE))
     groups <- list(geo_controls = c("terrain", "crop", "climate"),
       water_controls = c("shoreline", "historical_access", "distance", "portage"),

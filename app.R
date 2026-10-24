@@ -311,8 +311,8 @@ historical_ch_from_moments <- function(population, numerator, coverage, minimum 
 
 hch_variant_label <- function(value = NULL) {
   if (is.null(value)) value <- "historical"
-  choices <- c(historical = "Historical", a = "A: Predicted density", b = "B: Predicted employment weights",
-    ab = "A + B: Predicted density and weights")
+  choices <- c(historical = "Historical", a = "Predicted density", b = "Predicted employment weights",
+    ab = "Predicted density and weights")
   if (length(value) != 1L || is.na(value) || !value %in% names(choices)) stop("Choose a Historical CH construction.")
   unname(choices[[value]])
 }
@@ -374,8 +374,8 @@ hch_export_metadata <- function(table, details) {
 hch_prediction_settings_ui <- function() {
   tagList(
     labeledInput("state_hch_variant", "Historical CH construction:",
-      selectInput("state_hch_variant", NULL, c("Historical" = "historical", "A: Predicted density" = "a",
-        "B: Predicted employment weights" = "b", "A + B: Predicted density and weights" = "ab"), "historical"),
+      selectInput("state_hch_variant", NULL, c("Historical" = "historical", "Predicted density" = "a",
+        "Predicted employment weights" = "b", "Predicted density and weights" = "ab"), "historical"),
       "help_state_hch_variant", help_hch_prediction),
     labeledInput("state_hch_density_basis", "Historical density basis:",
       selectInput("state_hch_density_basis", NULL, c("Historical reporting-area density" = "source",

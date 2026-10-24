@@ -66,6 +66,9 @@ local({
     identical(app$pdf_help_button_topics("help_state_hch_coverage"), "11"))
   stopifnot(identical(option_values(full_html, "state_hch_variant"), c("historical", "a", "b", "ab")),
     identical(selected_value(full_html, "state_hch_variant"), "historical"),
+    identical(vapply(c("historical", "a", "b", "ab"), app$hch_variant_label, character(1), USE.NAMES = FALSE),
+      c("Historical", "Predicted density", "Predicted employment weights", "Predicted density and weights")),
+    !grepl('A: |B: |A \\+ B:', select_markup(full_html, "state_hch_variant")),
     identical(option_values(full_html, "state_hch_density_basis"), c("source", "modern")),
     identical(selected_value(full_html, "state_hch_density_basis"), "source"),
     identical(app$pdf_help_button_topics("help_state_hch_variant"), "20"),

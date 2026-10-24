@@ -13,11 +13,28 @@ assert_f_row <- function(html, expected) {
   stopifnot(identical(shown, unname(formatted)))
 }
 required <- unlist(lapply(app$historical_census_years, function(year)
-  paste0(rep(c("AWpop_", "GGpop_", "AWvalid_", "GGvalid_", "HCH_", "HCHpop_", "HCHvalid_"), each = 2L), year, c("", "_s"))))
+  paste0(rep(c("AWpop_", "GGpop_", "AWvalid_", "GGvalid_", "HCH_", "HCHpop_", "HCHvalid_",
+    "HCHobs_", "HCHnumer_", "HCHcover_"), each = 2L), year, c("", "_s"))))
 missing <- setdiff(required, names(app$state_data))
 if (length(missing)) stop(paste("State panel is missing required historical fields:", paste(missing, collapse = ", ")))
 stopifnot(identical(sort(unique(as.integer(app$state_data$year))), 2001:2022),
   all(table(app$state_data$year) == 48L), !any(app$state_data$statefips %in% c(2, 11, 15)))
+# Check the build rule from unmasked moments, not the already-masked index.
+for (year in app$historical_census_years) for (suffix in c("", "_s")) {
+  field <- function(stem) app$state_data[[paste0(stem, "_", year, suffix)]]
+  coverage <- field("HCHcover")
+  population <- field("HCHobs")
+  numerator <- field("HCHnumer")
+  expected <- is.finite(coverage) & coverage >= .80 &
+    is.finite(population) & population > 0 & is.finite(numerator) &
+    is.finite(numerator / population)
+  stopifnot(identical(as.integer(field("HCHvalid")), as.integer(expected)))
+}
+for (suffix in c("", "_s")) {
+  panel <- app$state_data[app$state_data$year == 2010, , drop = FALSE]
+  valid_ids <- panel$statefips[panel[[paste0("HCHvalid_1790", suffix)]] == 1L]
+  stopifnot(all(c(36L, 37L) %in% valid_ids), !13L %in% valid_ids)
+}
 ui <- htmltools::renderTags(app$ui)$html
 assert_ch_diagnostics_hidden(ui)
 select_values <- function(id) {
@@ -28,7 +45,8 @@ select_values <- function(id) {
 for (id in c("state_sample_year", "state_iv_year", "msa_sample_year", "msa_iv_year", "county_sample_year", "county_iv_year"))
   stopifnot(identical(select_values(id), as.integer(app$historical_census_years)))
 stopifnot(identical(select_values("water_year"), as.integer(seq(1790, 1860, 10))),
-  grepl('value="State"', ui, fixed = TRUE), grepl("at least 95% geographic coverage", app$help_state_ch, fixed = TRUE))
+  grepl('value="State"', ui, fixed = TRUE), grepl("at least 95% geographic coverage", app$help_state_ch, fixed = TRUE),
+  grepl("At least 80% coverage by allocated areas with known population", app$help_state_instrument, fixed = TRUE))
 
 # Reconstruct the estimating equations and covariance directly from county inputs.
 check_estimate <- function(result) {

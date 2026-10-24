@@ -86,6 +86,7 @@ local({
     abs(coef(result$models[[1]])[["ch_elasticity"]] - .08) < 1e-7)
   # The build validates known-area coverage. Omission flags do not veto a valid index.
   for (year in c(1790, 1900)) {
+    state[[paste0("HCHcover_", year, "_s")]] <- .8
     state[[paste0("HCHmiss_", year, "_s")]] <- 1L
     state[[paste0("HCHtie_", year, "_s")]] <- 1L
     state[[paste0("AWgap_", year, "_s")]] <- 1L

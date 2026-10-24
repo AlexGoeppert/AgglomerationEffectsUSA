@@ -143,7 +143,7 @@ help_instrument_form <- paste("Levels uses historical population in thousands of
   "The historical CH density index is already a weighted average of log densities and is used directly.")
 help_state_instrument <- paste("Glaeser and Gottlieb (2009) sums full historical county populations matched to current county identities within each state.",
   "Area-weighted population allocates each historical reporting area's population by its geographic overlap with modern counties, then sums within states.",
-  "Historical CH density index averages log historical reporting-area population density using population shares as weights. Reporting areas are assigned to the modern state containing most of their area; a unique majority assignment and at least 95% geographic coverage are required, and unknown populations remain unavailable. Jointly reported counties are treated as one reporting area.",
+  "Historical CH density index averages log historical reporting-area population density using allocated population shares as weights. Population and area are split across modern states by geographic overlap, using the same allocation as area-weighted population and preserving source density. Jointly reported counties are treated as one reporting area. Unknown populations are omitted from the average. At least 95% coverage by allocated areas with known population and usable geometry is required. Recorded zero populations count toward coverage and receive zero weight. Missing and unmapped records remain flagged but do not separately exclude a state meeting the coverage rule.",
   "The historical CH index uses only historical data and a fixed rule. It requires both relevance and the assumption that historical settlement affects current productivity only through the modeled density channel.")
 help_stock_wright <- paste("Stock–Wright LM S tests whether the CH elasticity is zero (theta = 1).",
   "Its p-value uses a chi-squared distribution with one degree of freedom and is robust to weak instruments when the model's moment assumptions hold.",
@@ -2209,7 +2209,7 @@ server <- function(input, output, session) {
       note <- paste0(note, ' The instrument is the full population of the highest-density historical county meeting the ',
         escape(overlap_pct), '% overlap threshold, without area weights.')
     if (identical(instrument_type, "historical_ch")) note <- paste0(note,
-      ' The historical instrument is the population-weighted average of log population density across historical reporting areas assigned geographically to each modern state. It is the theta0 → 1 limit of the normalized historical CH index and is used directly.')
+      ' The historical instrument averages log historical reporting-area density using population allocated to each modern state by geographic overlap. It is the theta0 → 1 limit of the normalized historical CH index and is used directly.')
     note <- paste0(note, ' Instrument scale: ', instrument_units(list(instrument_type = instrument_type,
       approach = approach, instrument_form = instrument_form)), '.')
     if (length(diagnostic_models)) {

@@ -84,6 +84,17 @@ local({
   stopifnot(result$n_obs == 24L, all(result$data_for_fs$instrument < 0),
     identical(result$data_for_fs$instrument, state$HCH_1900_s), result$instrument_form == "historical_ch",
     abs(coef(result$models[[1]])[["ch_elasticity"]] - .08) < 1e-7)
+  # The build validates known-area coverage. Omission flags do not veto a valid index.
+  for (year in c(1790, 1900)) {
+    state[[paste0("HCHmiss_", year, "_s")]] <- 1L
+    state[[paste0("HCHtie_", year, "_s")]] <- 1L
+    state[[paste0("AWgap_", year, "_s")]] <- 1L
+    state[[paste0("AWunallocated_", year, "_s")]] <- 100
+  }
+  flagged <- core$state_ch_result(settings, state)
+  stopifnot(flagged$n_obs == result$n_obs,
+    identical(flagged$data_for_fs$instrument, result$data_for_fs$instrument),
+    identical(coef(flagged$models[[1]]), coef(result$models[[1]])))
   for (construction in c("county_population", "area_population")) {
     result <- core$state_ch_result(modifyList(settings, list(state_instrument_type = construction)), state)
     stopifnot(identical(result$data_for_fs$instrument, log(100 + i^2)), result$instrument_form == "log",

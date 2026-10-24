@@ -256,9 +256,14 @@ local({
     native <- lapply(options, run_option, scope = scope, sample = 'available')
     scope_members[[scope]] <- lapply(native, state_ids)
     expected_n <- if (scope == 'states_only') 42L else 43L
-    for (name in c('AW_levels', 'AW_log', 'HCH_levels', 'HCH_log'))
+    for (name in c('AW_levels', 'AW_log'))
       stopifnot(nobs(native[[name]]$models[[1]]) == expected_n,
         all(c(20L, 29L) %in% state_ids(native[[name]]))) # Kansas and Missouri
+    hch_expected <- sort(as.integer(unique(original_state$statefips)))
+    if (scope == 'states_only') hch_expected <- setdiff(hch_expected, c(4L, 35L, 40L))
+    for (name in c('HCH_levels', 'HCH_log'))
+      stopifnot(identical(state_ids(native[[name]]), hch_expected),
+        all(c(27L, 30L, 46L) %in% state_ids(native[[name]]))) # Minnesota, Montana, South Dakota
     for (pair in list(c('AW_levels', 'AW_log'), c('GG_levels', 'GG_log'), c('HCH_levels', 'HCH_log')))
       stopifnot(identical(state_ids(native[[pair[1]]]), state_ids(native[[pair[2]]])))
     stopifnot(isTRUE(all.equal(coef(native$HCH_levels$models[[1]]), coef(native$HCH_log$models[[1]]), tolerance = 1e-12)),
@@ -279,12 +284,13 @@ local({
   for (name in c('AW_levels', 'HCH_levels')) {
     state_ids_only <- scope_members$states_only[[name]]
     state_ids_all <- scope_members$states_territories[[name]]
+    additions <- if (name == 'HCH_levels') c(4L, 35L, 40L) else 35L
     stopifnot(all(state_ids_only %in% state_ids_all),
-      identical(as.integer(setdiff(state_ids_all, state_ids_only)), 35L)) # New Mexico
+      identical(as.integer(setdiff(state_ids_all, state_ids_only)), additions))
   }
   write.csv(do.call(rbind, estimates), file.path(work, 'state_2020_1900_options.csv'), row.names = FALSE)
   write.csv(do.call(rbind, members), file.path(work, 'state_2020_1900_option_samples.csv'), row.names = FALSE)
-  cat('State 2020/1900 checks passed: native/common samples, exact logs, signed HCH and restored Kansas/Missouri coverage.\n')
+  cat('State 2020/1900 checks passed: native/common samples, exact logs, signed HCH, unchanged population samples and restored Minnesota/Montana/South Dakota.\n')
 })
 # Construct two known IV roots rather than depending on an old geographic sample.
 local({

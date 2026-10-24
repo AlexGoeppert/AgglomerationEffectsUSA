@@ -29,7 +29,7 @@ local({
     grepl("pdf_help_server", paste(deparse(body(app$server)), collapse = " "), fixed = TRUE))
 
   manifest <- app$pdf_help_manifest()
-  stopifnot(identical(manifest$id, sprintf("%02d", 1:19)), !anyDuplicated(manifest$file),
+  stopifnot(identical(manifest$id, sprintf("%02d", 1:20)), !anyDuplicated(manifest$file),
     all(nzchar(manifest$title)), !any(grepl("[/\\\\]", c(manifest$file, manifest$image))))
   for (i in seq_len(nrow(manifest))) {
     pdf <- file.path("www", "help", manifest$file[i])
@@ -149,5 +149,5 @@ local({
       input$settings_section == "controls", input$analysis_level == "MSA",
       !"settings_section" %in% names(sent), !"analysis_level" %in% names(sent))
   })
-  cat("PDF help checks passed:", length(ids), "buttons, 19 local documents, dynamic topics, related notes, repeated opens, image previews, and optional PDF viewer.\n")
+  cat("PDF help checks passed:", length(ids), "buttons,", nrow(manifest), "local documents, dynamic topics, related notes, repeated opens, image previews, and optional PDF viewer.\n")
 })

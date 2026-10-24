@@ -4,7 +4,7 @@ pdf_help_manifest <- function() {
     "county_matching", "area_weighting", "instrument_scale", "fixed_effects",
     "schooling_college", "standard_ch", "historical_ch_instrument", "county_geography_ch",
     "human_capital_ch", "terrain_crops_climate", "water_transport", "distance_portage",
-    "standard_errors", "reading_results", "interface_exports")
+    "standard_errors", "reading_results", "interface_exports", "predicted_historical_ch")
   titles <- c("Geographic units, outcomes and sample filters", "OLS, IV and the first stage",
     "Historical years, territory and the sample", "Historical density and geographic overlap",
     "Glaeser and Gottlieb (2009): county matching", "Area-weighted historical population",
@@ -12,7 +12,7 @@ pdf_help_manifest <- function() {
     "The standard Ciccone–Hall model", "The historical CH instrument", "County geography inside CH",
     "Schooling and college inside CH", "Terrain, crops and climate", "Water access and historical transport",
     "Distances and approximate portage access", "Standard errors", "Reading the regression results",
-    "Running, checking and saving an analysis")
+    "Running, checking and saving an analysis", "County predictions in the historical CH instrument")
   ids <- sprintf("%02d", seq_along(stems))
   files <- paste0(ids, "_", stems)
   data.frame(id = ids, title = titles, file = paste0(files, ".pdf"),
@@ -24,7 +24,10 @@ pdf_help_bindings <- function() {
     help_approach = "02", help_analysis_type = "02", help_instrument_form = "07",
     help_use_fe = "08", help_fe_type = "08", help_sample_scope = "03",
     help_state_ch = "10", help_state_sample_year = "03", help_state_iv_year = "03",
-    help_state_instrument_type = "instrument", help_geo_controls = "14",
+    help_state_instrument_type = "instrument", help_state_hch_coverage = "11",
+    help_state_hch_variant = "20", help_state_hch_density_basis = "20",
+    help_state_hch_prediction_geo_controls = "20", help_state_hch_prediction_water_controls = "20",
+    help_state_hch_prediction_transport_controls = "20", help_state_hch_prediction_water_year = "20", help_geo_controls = "14",
     help_water_controls = "water", help_water_year = "15", help_county_msa_restriction = "01",
     help_display_options = "19", help_reading_results = "18", help_downloads = "19")
   for (level in c("msa", "county")) {

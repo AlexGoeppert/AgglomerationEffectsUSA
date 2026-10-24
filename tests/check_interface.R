@@ -59,6 +59,19 @@ local({
   stopifnot(length(ui) == 1L)
   eval(ui[[1]], app)
   full_html <- htmltools::renderTags(app$ui)$html
+  stopifnot(identical(option_values(full_html, "state_hch_coverage"), c("80", "95", "none")),
+    identical(selected_value(full_html, "state_hch_coverage"), "80"),
+    grepl("Historical CH coverage:", full_html, fixed = TRUE),
+    grepl("input.state_instrument_type == &#39;historical_ch&#39;", full_html, fixed = TRUE),
+    identical(app$pdf_help_button_topics("help_state_hch_coverage"), "11"))
+  stopifnot(identical(option_values(full_html, "state_hch_variant"), c("historical", "a", "b", "ab")),
+    identical(selected_value(full_html, "state_hch_variant"), "historical"),
+    identical(option_values(full_html, "state_hch_density_basis"), c("source", "modern")),
+    identical(selected_value(full_html, "state_hch_density_basis"), "source"),
+    identical(app$pdf_help_button_topics("help_state_hch_variant"), "20"),
+    identical(app$pdf_help_button_topics("help_state_hch_density_basis"), "20"),
+    grepl("input.state_hch_variant != &#39;historical&#39;", full_html, fixed = TRUE),
+    grepl('id="download_hch_diagnostics"', full_html, fixed = TRUE))
   nav <- regmatches(full_html, regexec('<ul[^>]*id="settings_section"[^>]*>[\\s\\S]*?</ul>', full_html, perl = TRUE))[[1]]
   stopifnot(length(nav) == 1L)
   tabs <- regmatches(nav, gregexpr('<a[^>]*data-value="[^"]+"[^>]*>', nav, perl = TRUE))[[1]]

@@ -1,5 +1,7 @@
 source("tests/check_state_core.R")
 source("tests/setup.R")
+source("tests/check_hch_coverage.R")
+check_hch_coverage_options(app)
 assert_ch_diagnostics_hidden <- function(html = NULL, csv = NULL) {
   if (!is.null(html)) stopifnot(!grepl("Anderson.{0,12}Rubin|Local instrument Wald F|Local instrument partial R|partial R-squared|partial R²", html, ignore.case = TRUE))
   if (!is.null(csv)) stopifnot(!any(grepl("^anderson_rubin_|^ch_local_partial_r2$", names(csv))))
@@ -46,7 +48,8 @@ for (id in c("state_sample_year", "state_iv_year", "msa_sample_year", "msa_iv_ye
   stopifnot(identical(select_values(id), as.integer(app$historical_census_years)))
 stopifnot(identical(select_values("water_year"), as.integer(seq(1790, 1860, 10))),
   grepl('value="State"', ui, fixed = TRUE), grepl("at least 95% geographic coverage", app$help_state_ch, fixed = TRUE),
-  grepl("At least 80% coverage by allocated areas with known population", app$help_state_instrument, fixed = TRUE))
+  grepl("80% or 95%", app$help_state_instrument, fixed = TRUE),
+  grepl("No coverage filter", app$help_state_instrument, fixed = TRUE))
 
 # Reconstruct the estimating equations and covariance directly from county inputs.
 check_estimate <- function(result) {

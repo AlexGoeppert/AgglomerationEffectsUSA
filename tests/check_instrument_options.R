@@ -73,6 +73,9 @@ local({
     state[[paste0("HCH_", year, suffix)]] <- state$RHS - 2
     state[[paste0("HCHvalid_", year, suffix)]] <- 1L
     state[[paste0("HCHpop_", year, suffix)]] <- 100 + i
+    state[[paste0("HCHobs_", year, suffix)]] <- 100 + i
+    state[[paste0("HCHnumer_", year, suffix)]] <- (state$RHS - 2) * (100 + i)
+    state[[paste0("HCHcover_", year, suffix)]] <- 1
     for (prefix in c("GG", "AW")) {
       state[[paste0(prefix, "pop_", year, suffix)]] <- 100 + i^2
       state[[paste0(prefix, "valid_", year, suffix)]] <- 1L
@@ -82,15 +85,19 @@ local({
     analysis_type = "IV", state_instrument_type = "historical_ch", sample_scope = "states_only", instrument_form = "log")
   result <- core$state_ch_result(settings, state)
   stopifnot(result$n_obs == 24L, all(result$data_for_fs$instrument < 0),
-    identical(result$data_for_fs$instrument, state$HCH_1900_s), result$instrument_form == "historical_ch",
+    isTRUE(all.equal(result$data_for_fs$instrument, state$HCH_1900_s, tolerance = 1e-12)), result$instrument_form == "historical_ch",
+    identical(result$state_hch_coverage, "80"), identical(result$hch_coverage_required, .80),
     abs(coef(result$models[[1]])[["ch_elasticity"]] - .08) < 1e-7)
-  # The build validates known-area coverage. Omission flags do not veto a valid index.
+  # Raw moments determine eligibility; masked build fields and omission flags do not.
   for (year in c(1790, 1900)) {
     state[[paste0("HCHcover_", year, "_s")]] <- .8
     state[[paste0("HCHmiss_", year, "_s")]] <- 1L
     state[[paste0("HCHtie_", year, "_s")]] <- 1L
     state[[paste0("AWgap_", year, "_s")]] <- 1L
     state[[paste0("AWunallocated_", year, "_s")]] <- 100
+    state[[paste0("HCH_", year, "_s")]] <- NA_real_
+    state[[paste0("HCHpop_", year, "_s")]] <- NA_real_
+    state[[paste0("HCHvalid_", year, "_s")]] <- 0L
   }
   flagged <- core$state_ch_result(settings, state)
   stopifnot(flagged$n_obs == result$n_obs,
@@ -101,9 +108,37 @@ local({
     stopifnot(identical(result$data_for_fs$instrument, log(100 + i^2)), result$instrument_form == "log",
       abs(coef(result$models[[1]])[["ch_elasticity"]] - .08) < 1e-7)
   }
-  state$HCHpop_1900_s[1] <- 0
-  state$HCHvalid_1790_s[2] <- 0
+  state$HCHobs_1900_s[1] <- 0
+  state$HCHcover_1790_s[2] <- .79
   result <- core$state_ch_result(settings, state)
   stopifnot(result$n_obs == 22L, result$population_missing_n == 2L)
+
+  # Apply the same selected coverage rule separately to both historical years.
+  selected <- state
+  selected$HCHobs_1900_s <- 100 + i
+  selected$HCHcover_1790_s <- selected$HCHcover_1900_s <- rep(1, length(i))
+  selected$HCHcover_1790_s[1:5] <- c(.79, .80, .9499, .95, NA)
+  selected$HCHcover_1900_s[6:10] <- c(.79, .80, .9499, .95, -.1)
+  selected$HCHobs_1790_s[11:12] <- c(0, NA)
+  selected$HCHnumer_1900_s[13] <- Inf
+  selected$HCHobs_1900_s[14] <- Inf
+  selected$HCHnumer_1790_s[15] <- NA
+  base_excluded <- c(5L, 10:15)
+  for (choice in c("80", "95", "none")) for (method in c("IV", "OLS")) {
+    excluded <- switch(choice, `80` = c(base_excluded, 1L, 6L),
+      `95` = c(base_excluded, 1:3, 6:8), none = base_excluded)
+    fit <- core$state_ch_result(modifyList(settings,
+      list(state_hch_coverage = choice, analysis_type = method)), selected)
+    stopifnot(identical(as.integer(fit$data_for_fs$statefips), setdiff(i, excluded)),
+      fit$population_missing_n == length(unique(excluded)), fit$state_hch_coverage == choice,
+      abs(coef(fit$models[[1]])[["ch_elasticity"]] - .08) < 1e-7)
+  }
+  no_filter <- core$historical_ch_from_moments(c(1, 0, 1, 1), c(0, 0, NA, 2), c(0, 1, 1, Inf), minimum = 0)
+  stopifnot(identical(no_filter$keep, c(TRUE, FALSE, FALSE, FALSE)),
+    no_filter$value[1] == 0, core$historical_ch_coverage("none")$minimum == 0)
+  for (choice in list("", "90", "0", NA_character_, c("80", "95"))) {
+    error <- tryCatch({core$historical_ch_coverage(choice); NULL}, error = conditionMessage)
+    stopifnot(grepl("Choose Historical CH coverage", error, fixed = TRUE))
+  }
   cat("Instrument options checks passed: exact logs, HCH state input, historical scope, final samples and IV boundary recovery.\n")
 })

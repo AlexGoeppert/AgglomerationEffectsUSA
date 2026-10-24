@@ -143,8 +143,9 @@ help_instrument_form <- paste("Levels uses historical population in thousands of
   "The historical CH density index is already a weighted average of log densities and is used directly.")
 help_state_instrument <- paste("Glaeser and Gottlieb (2009) sums full historical county populations matched to current county identities within each state.",
   "Area-weighted population allocates each historical reporting area's population by its geographic overlap with modern counties, then sums within states.",
-  "Historical CH density index averages log historical reporting-area population density using allocated population shares as weights. Population and area are split across modern states by geographic overlap, using the same allocation as area-weighted population and preserving source density. Jointly reported counties are treated as one reporting area. Unknown populations are omitted from the average. At least 80% coverage by allocated areas with known population and usable geometry is required. Recorded zero populations count toward coverage and receive zero weight. Missing and unmapped records remain flagged but do not separately exclude a state meeting the coverage rule.",
-  "The historical CH index uses only historical data and a fixed rule. It requires both relevance and the assumption that historical settlement affects current productivity only through the modeled density channel.")
+  "Historical CH density index averages log historical reporting-area population density using allocated population shares as weights. Population and area are split across modern states by geographic overlap, using the same allocation as area-weighted population and preserving source density. Jointly reported counties are treated as one reporting area. Unknown populations are omitted from the average. Historical CH coverage selects an 80% or 95% minimum share of area with known population and usable geometry, or No coverage filter. The same selection applies in both historical years. Recorded zero populations count toward coverage and receive zero weight. All choices require positive observed population and a finite index; missing and unmapped records remain flagged.",
+  "The Historical option uses historical data. Prediction options use a county regression of modern employment density on historical density and selected geography, then replace the density term, population weights, or both. All instruments require relevance and an appropriate exclusion assumption.")
+help_hch_prediction <- "Choose the historical index or replace county density, population weights, or both using the county prediction. The one-page explanation gives the equation, sample and coverage rule."
 help_stock_wright <- paste("Stock–Wright LM S tests whether the CH elasticity is zero (theta = 1).",
   "Its p-value uses a chi-squared distribution with one degree of freedom and is robust to weak instruments when the model's moment assumptions hold.",
   "For county-adjusted CH with estimated geography effects, the null retains the selected adjustments. The test propagates geography-calibration uncertainty and additionally requires a regularly identified county calibration.",
@@ -288,6 +289,116 @@ ch_has_human_capital <- function(mode) isTRUE(mode %in% c("human_capital", "both
 
 ch_adjustment_label <- function(mode) {
   switch(mode, human_capital = "Schooling and college", both = "Geography + schooling and college", "Geography")
+}
+
+historical_ch_coverage <- function(value = NULL) {
+  if (is.null(value)) value <- "80"
+  value <- as.character(value)
+  if (length(value) != 1L || is.na(value) || !value %in% c("80", "95", "none"))
+    stop("Choose Historical CH coverage of 80%, 95%, or No coverage filter.")
+  list(value = value, minimum = switch(value, `80` = .80, `95` = .95, none = 0),
+    label = switch(value, `80` = "80%", `95` = "95%", none = "No coverage filter"))
+}
+
+historical_ch_from_moments <- function(population, numerator, coverage, minimum = .80) {
+  if (length(unique(lengths(list(population, numerator, coverage)))) != 1L)
+    stop("Historical CH moment fields have different lengths.")
+  value <- numerator / population
+  keep <- is.finite(population) & population > 0 & is.finite(numerator) &
+    is.finite(value) & is.finite(coverage) & coverage >= 0 & coverage >= minimum
+  list(value = value, keep = keep)
+}
+
+hch_variant_label <- function(value = NULL) {
+  if (is.null(value)) value <- "historical"
+  choices <- c(historical = "Historical", a = "A: Predicted density", b = "B: Predicted employment weights",
+    ab = "A + B: Predicted density and weights")
+  if (length(value) != 1L || is.na(value) || !value %in% names(choices)) stop("Choose a Historical CH construction.")
+  unname(choices[[value]])
+}
+
+hch_basis_label <- function(value = NULL) {
+  if (is.null(value)) value <- "source"
+  choices <- c(source = "Historical reporting-area density", modern = "Allocated population / modern county land area")
+  if (length(value) != 1L || is.na(value) || !value %in% names(choices)) stop("Choose a historical density basis.")
+  unname(choices[[value]])
+}
+
+hch_prediction_settings <- function(input) {
+  variant <- if (is.null(input$state_hch_variant)) "historical" else input$state_hch_variant
+  basis <- if (is.null(input$state_hch_density_basis)) "source" else input$state_hch_density_basis
+  hch_variant_label(variant)
+  hch_basis_label(basis)
+  geo_vars <- character()
+  water_year <- NA_integer_
+  if (variant != "historical") {
+    water_year <- if (is.null(input$state_hch_prediction_water_year)) 1820L else as.integer(input$state_hch_prediction_water_year)
+    transport <- input$state_hch_prediction_transport_controls
+    if (any(!transport %in% c("water_1820", "railroads_1840", "railroads_1850", "railroads_1861")))
+      stop("Unknown historical CH prediction transport control.")
+    geo_vars <- unique(c(resolve_geo_controls(input$state_hch_prediction_geo_controls,
+      input$state_hch_prediction_water_controls, water_year), transport))
+  }
+  list(variant = variant, basis = basis, geo_vars = geo_vars, water_year = water_year)
+}
+
+hch_result_metadata <- function(details) {
+  if (!identical(details$instrument_type, "historical_ch")) return(character())
+  result <- c(`Historical CH construction` = hch_variant_label(details$state_hch_variant),
+    `Historical density basis` = hch_basis_label(details$state_hch_density_basis),
+    `Historical CH coverage` = historical_ch_coverage(details$state_hch_coverage)$label)
+  if (isTRUE(details$state_hch_variant %in% c("a", "b", "ab"))) {
+    counts <- vapply(details$hch_prediction_diagnostics, function(x) as.integer(x$diagnostics$nobs), integer(1))
+    result <- c(result,
+      `Prediction geography` = if (length(details$hch_prediction_geo_vars)) paste(vapply(details$hch_prediction_geo_vars, control_label, character(1)), collapse = "; ") else "None",
+      `County prediction sample` = paste(names(counts), counts, sep = ": ", collapse = "; "),
+      `Prediction inference` = "Standard errors and tests are conditional on the fitted county prediction.")
+  }
+  result
+}
+
+hch_export_metadata <- function(table, details) {
+  if (!identical(details$instrument_type, "historical_ch")) return(table)
+  table$historical_ch_coverage <- historical_ch_coverage(details$state_hch_coverage)$label
+  table$historical_ch_coverage_required <- details$hch_coverage_required
+  table$historical_ch_variant <- if (is.null(details$state_hch_variant)) "historical" else details$state_hch_variant
+  table$historical_ch_density_basis <- if (is.null(details$state_hch_density_basis)) "source" else details$state_hch_density_basis
+  table$historical_ch_prediction_geography <- paste(details$hch_prediction_geo_vars, collapse = "; ")
+  table$historical_ch_prediction_water_year <- if (length(details$hch_prediction_water_year)) details$hch_prediction_water_year else NA_integer_
+  table$historical_ch_sample_prediction_n <- details$hch_prediction_diagnostics[[as.character(details$sample_year)]]$diagnostics$nobs
+  table$historical_ch_instrument_prediction_n <- details$hch_prediction_diagnostics[[as.character(details$iv_year)]]$diagnostics$nobs
+  table$historical_ch_prediction_inference <- if (table$historical_ch_variant[1L] != "historical") "Conditional on fitted county prediction" else "No estimated county prediction"
+  table
+}
+
+hch_prediction_settings_ui <- function() {
+  tagList(
+    labeledInput("state_hch_variant", "Historical CH construction:",
+      selectInput("state_hch_variant", NULL, c("Historical" = "historical", "A: Predicted density" = "a",
+        "B: Predicted employment weights" = "b", "A + B: Predicted density and weights" = "ab"), "historical"),
+      "help_state_hch_variant", help_hch_prediction),
+    labeledInput("state_hch_density_basis", "Historical density basis:",
+      selectInput("state_hch_density_basis", NULL, c("Historical reporting-area density" = "source",
+        "Allocated population / modern county land area" = "modern"), "source"),
+      "help_state_hch_density_basis", help_hch_prediction),
+    conditionalPanel("input.state_hch_variant != 'historical'",
+      h4("Geography in the county prediction"),
+      labeledInput("state_hch_prediction_geo_controls", "Terrain, crop suitability and climate:",
+        checkboxGroupInput("state_hch_prediction_geo_controls", NULL,
+          c("Ruggedness and Elevation" = "terrain", "Wheat and Maize Suitability" = "crop", "Temperature and Precipitation" = "climate"),
+          selected = c("terrain", "crop", "climate")), "help_state_hch_prediction_geo_controls", help_hch_prediction),
+      labeledInput("state_hch_prediction_water_controls", "Separate water measures:",
+        checkboxGroupInput("state_hch_prediction_water_controls", NULL,
+          c("Ocean and Great Lakes Access" = "shoreline", "Historical River and Canal Access" = "historical_access",
+            "Distance to Shores and Waterways" = "distance", "Approximate Portage Access" = "portage"),
+          selected = c("shoreline", "historical_access", "distance", "portage")), "help_state_hch_prediction_water_controls", help_hch_prediction),
+      labeledInput("state_hch_prediction_transport_controls", "Water access and railroads:",
+        checkboxGroupInput("state_hch_prediction_transport_controls", NULL,
+          c("Water Access Sum, 1820" = "water_1820", "Railroads, 1840" = "railroads_1840", "Railroads, 1850" = "railroads_1850", "Railroads, 1861" = "railroads_1861"),
+          selected = c("water_1820", "railroads_1840")), "help_state_hch_prediction_transport_controls", help_hch_prediction),
+      labeledInput("state_hch_prediction_water_year", "Waterway reference year:",
+        selectInput("state_hch_prediction_water_year", NULL, seq(1790, 1860, 10), 1820),
+        "help_state_hch_prediction_water_year", help_hch_prediction)))
 }
 
 geography_settings_defaults <- function() {
@@ -548,7 +659,12 @@ transform_historical_instrument <- function(values, form = "levels", population 
 }
 
 instrument_units <- function(details) {
-  if (identical(details$instrument_type, "historical_ch")) return("Population-weighted mean log historical density (people/km²)")
+  if (identical(details$instrument_type, "historical_ch")) {
+    variant <- if (is.null(details$state_hch_variant)) "historical" else details$state_hch_variant
+    weights <- if (variant %in% c("b", "ab")) "Predicted-employment-weighted" else "Population-weighted"
+    density <- if (variant %in% c("a", "ab")) "predicted log modern employment density (employment/km²)" else "log historical density (people/km²)"
+    return(paste(weights, "mean", density))
+  }
   population <- uses_population_instrument(details)
   if (identical(details$instrument_form, "log")) {
     if (population) "Natural log of population (people)" else "Natural log of density (people/km²)"
@@ -584,7 +700,9 @@ sample_exclusion_notes <- function(details) {
     "observations in the selected historical sample lack a usable identity for the selected state fixed effects and are excluded."))
   if (identical(details$analysis_level, "State") && isTRUE(details$population_missing_n > 0L))
     notes <- c(notes, paste(details$population_missing_n,
-      "states have an unavailable historical instrument for the selected sample/instrument years and construction."))
+      if (identical(details$instrument_type, "historical_ch"))
+        "states fail the selected Historical CH coverage rule or lack usable historical moments or selected prediction inputs in one of the two historical years."
+      else "states have an unavailable historical instrument for the selected sample/instrument years and construction."))
   notes
 }
 
@@ -1142,6 +1260,32 @@ result_plot <- function(details) {
 source("pdf_help.R", local = TRUE)
 source("state_ch_adjustments.R", local = TRUE)
 source("state_ch_adjustment_interface.R", local = TRUE)
+source("hch_prediction.R", local = TRUE)
+
+# Keep one modern year. Prediction training always uses national county inputs.
+get_hch_modern_inputs <- local({
+  cached_year <- NULL
+  cached <- NULL
+  function(year) {
+    if (identical(as.integer(year), cached_year)) return(cached)
+    loader <- make_app_data_loader()
+    panel <- loader$get_state()
+    panel <- panel[panel$year == as.integer(year), , drop = FALSE]
+    static <- as.data.frame(get_state_adjustment_inputs())
+    row <- match(static$statefips, panel$statefips)
+    if (anyNA(row)) stop("National county prediction inputs are missing a modern state.")
+    components <- static[c("geofips", "statefips", "ac")]
+    components$nc <- vapply(seq_len(nrow(static)), function(i)
+      as.numeric(panel[[paste0("nc", static$ch_slot[i])]][row[i]]), numeric(1))
+    slot_area <- vapply(seq_len(nrow(static)), function(i)
+      as.numeric(panel[[paste0("ac", static$ch_slot[i])]][row[i]]), numeric(1))
+    if (any(!is.finite(slot_area)) || any(abs(slot_area - components$ac) > 1e-7 * (1 + abs(components$ac))))
+      stop("County prediction membership does not match the modern CH land-area slots.")
+    cached <<- list(components = components, geography = static)
+    cached_year <<- as.integer(year)
+    cached
+  }
+})
 
 ui <- fluidPage(title = "Agglomeration Effects USA",
   titlePanel(div(class = "beamer-title",
@@ -1395,7 +1539,13 @@ ui <- fluidPage(title = "Agglomeration Effects USA",
               labeledInput("state_instrument_type", "Match of historical to modern units:",
                 selectInput("state_instrument_type", NULL,
                   c("Glaeser and Gottlieb (2009)" = "county_population", "Area-weighted population" = "area_population", "Historical CH density index" = "historical_ch"), "area_population"),
-                "help_state_instrument_type", help_state_instrument)),
+                "help_state_instrument_type", help_state_instrument),
+              conditionalPanel("input.state_instrument_type == 'historical_ch'",
+                labeledInput("state_hch_coverage", "Historical CH coverage:",
+                  selectInput("state_hch_coverage", NULL,
+                    c("80%" = "80", "95%" = "95", "No coverage filter" = "none"), "80"),
+                  "help_state_hch_coverage", help_state_instrument),
+                hch_prediction_settings_ui())),
             conditionalPanel("input.analysis_level != 'State' || input.state_instrument_type != 'historical_ch'",
               labeledInput("instrument_form", "Historical instrument scale:",
                 selectInput("instrument_form", NULL, c("Levels" = "levels", "Natural log" = "log"), "levels"),
@@ -1470,6 +1620,8 @@ ui <- fluidPage(title = "Agglomeration Effects USA",
           pdf_help_button("help_downloads", "Saving an analysis"),
           conditionalPanel("(input.analysis_level == 'State' && input.state_ch_mode == 'county_adjusted' && input.state_adjustment_mode != 'human_capital') || (input.analysis_level == 'MSA' && input.approach != 'employment' && input.msa_density_measure == 'CH' && input.msa_ch_mode == 'county_adjusted' && input.msa_adjustment_mode != 'human_capital')",
             downloadButton("download_county_calibration", "County calibration (CSV)")),
+          conditionalPanel("input.analysis_level == 'State' && input.state_instrument_type == 'historical_ch'",
+            downloadButton("download_hch_diagnostics", "Historical CH inputs (CSV)")),
           conditionalPanel("input.show_coefficient_chart == true", downloadButton("download_plot", "Chart (PNG)"))
         )
       ),
@@ -1504,26 +1656,62 @@ state_ch_result <- function(input, data) {
       !sample_year %in% historical_census_years || !iv_year %in% historical_census_years)
     stop("Choose a historical census year from 1790 to 1900.")
   historical_ch <- construction == "historical_ch"
+  coverage_choice <- if (historical_ch) historical_ch_coverage(input$state_hch_coverage) else NULL
+  hch_settings <- if (historical_ch) hch_prediction_settings(input) else NULL
+  hch_years <- list()
   prefix <- if (historical_ch) "HCH" else if (construction == "county_population") "GG" else "AW"
   suffix <- if (scope == "states_only") "_s" else ""
   sample_col <- paste0(prefix, if (historical_ch) "_" else "pop_", sample_year, suffix)
   instrument_col <- paste0(prefix, if (historical_ch) "_" else "pop_", iv_year, suffix)
   valid_cols <- paste0(prefix, "valid_", c(sample_year, iv_year), suffix)
-  population_cols <- if (historical_ch) paste0("HCHpop_", c(sample_year, iv_year), suffix) else character()
-  needed <- unique(c("year", "statefips", "state_name", "LHS", "RHS", "ch_complete",
-    sample_col, instrument_col, valid_cols, population_cols))
+  historical_fields <- if (historical_ch) unlist(lapply(c(sample_year, iv_year), function(year)
+    paste0(c("HCHobs_", "HCHnumer_", "HCHcover_"), year, suffix))) else c(sample_col, instrument_col, valid_cols)
+  needed <- unique(c("year", "statefips", "state_name", "LHS", "RHS", "ch_complete", historical_fields))
   absent <- setdiff(needed, names(data))
   if (length(absent)) stop(paste("State data fields are missing:", paste(absent, collapse = ", ")))
   df <- data[data$year %in% year, , drop = FALSE]
   if (!nrow(df)) stop("State data are unavailable for the selected modern year.")
-  valid_population <- Reduce(`&`, lapply(df[valid_cols], function(x) !is.na(x) & x == 1)) &
-    is.finite(df[[sample_col]]) & is.finite(df[[instrument_col]])
-  if (historical_ch) valid_population <- valid_population &
-    Reduce(`&`, lapply(df[population_cols], function(x) is.finite(x) & x > 0))
-  else valid_population <- valid_population & df[[sample_col]] >= 0 & df[[instrument_col]] >= 0
+  if (historical_ch) {
+    if (hch_settings$variant == "historical" && hch_settings$basis == "source") {
+      moments <- function(year) {
+        population <- df[[paste0("HCHobs_", year, suffix)]]
+        coverage <- df[[paste0("HCHcover_", year, suffix)]]
+        value <- historical_ch_from_moments(population, df[[paste0("HCHnumer_", year, suffix)]],
+          coverage, coverage_choice$minimum)
+        list(states = data.frame(statefips = df$statefips, index = value$value, coverage = coverage,
+          population = population, keep = value$keep), diagnostics = list(nobs = NA_integer_, coefficients = numeric()))
+      }
+    } else {
+      national <- get_hch_modern_inputs(year)
+      county_moments <- get_hch_county_moments()
+      geography <- scale_model_controls(national$geography, hch_settings$geo_vars)
+      moments <- function(year) hch_prediction_year(county_moments, national$components, geography,
+        historical_year = year, scope = scope, basis = hch_settings$basis, variant = hch_settings$variant,
+        geo_vars = hch_settings$geo_vars, minimum = coverage_choice$minimum)
+    }
+    for (selected_year in unique(c(sample_year, iv_year))) hch_years[[as.character(selected_year)]] <- moments(selected_year)
+    values <- function(year) {
+      states <- hch_years[[as.character(year)]]$states
+      row <- match(df$statefips, states$statefips)
+      list(value = states$index[row], coverage = states$coverage[row], keep = !is.na(row) & states$keep[row])
+    }
+    sample_values <- values(sample_year)
+    instrument_values <- values(iv_year)
+    valid_population <- sample_values$keep & instrument_values$keep
+    df$hch_sample_index <- sample_values$value
+    df$hch_instrument_index <- instrument_values$value
+    df$hch_sample_coverage <- sample_values$coverage
+    df$hch_instrument_coverage <- instrument_values$coverage
+    selected_instrument <- instrument_values$value
+  } else {
+    valid_population <- Reduce(`&`, lapply(df[valid_cols], function(x) !is.na(x) & x == 1)) &
+      is.finite(df[[sample_col]]) & is.finite(df[[instrument_col]]) &
+      df[[sample_col]] >= 0 & df[[instrument_col]] >= 0
+    selected_instrument <- df[[instrument_col]]
+  }
   population_missing_n <- sum(!valid_population)
   df <- df[valid_population, , drop = FALSE]
-  transformed <- transform_historical_instrument(df[[instrument_col]], input$instrument_form,
+  transformed <- transform_historical_instrument(selected_instrument[valid_population], input$instrument_form,
     population = !historical_ch, historical_ch = historical_ch)
   df$instrument <- transformed$values
   df <- df[transformed$keep, , drop = FALSE]
@@ -1536,8 +1724,20 @@ state_ch_result <- function(input, data) {
   df$state_id <- df$statefips
   df$clusterID <- df$statefips
   df <- df[is.finite(df$LHS) & is.finite(df$RHS), , drop = FALSE]
+  add_coverage <- function(result) {
+    if (historical_ch) {
+      result$state_hch_coverage <- coverage_choice$value
+      result$hch_coverage_required <- coverage_choice$minimum
+      result$state_hch_variant <- hch_settings$variant
+      result$state_hch_density_basis <- hch_settings$basis
+      result$hch_prediction_geo_vars <- hch_settings$geo_vars
+      result$hch_prediction_water_year <- hch_settings$water_year
+      result$hch_prediction_diagnostics <- hch_years
+    }
+    result
+  }
   if (identical(input$state_ch_mode, "county_adjusted"))
-    return(state_ch_adjusted_result(input, df, population_missing_n, transformed))
+    return(add_coverage(state_ch_adjusted_result(input, df, population_missing_n, transformed)))
   warnings <- character()
   model <- withCallingHandlers(
     fit_ch_model(df, "LHS", method = method, se_spec = "robust"),
@@ -1546,7 +1746,7 @@ state_ch_result <- function(input, data) {
       invokeRestart("muffleWarning")
     })
   models <- setNames(list(model), "Ciccone–Hall")
-  list(models = models, first_stage_models = list(), analysis_type = method,
+  add_coverage(list(models = models, first_stage_models = list(), analysis_type = method,
     approach = "density", density_measure = "CH", analysis_level = "State", year_modern = year,
     sectors = 1L, sample_year = sample_year, iv_year = iv_year, instrument_type = construction,
     instrument_form = transformed$form, log_nonpositive_n = transformed$nonpositive,
@@ -1560,7 +1760,7 @@ state_ch_result <- function(input, data) {
     model_warnings = warnings, geo_controls = character(), water_controls = character(),
     water_year = NA_integer_, new_controls = character(),
     cluster_data = list(clusterID = df$clusterID, state_id = df$state_id),
-    data_for_fs = df, fe_part = "0", vcov_arg = "hetero")
+    data_for_fs = df, fe_part = "0", vcov_arg = "hetero"))
 }
 
 server <- function(input, output, session) {
@@ -2117,7 +2317,8 @@ server <- function(input, output, session) {
                                         first_stage_models = NULL, data_for_fs = NULL,
                                         controls_vec = NULL, fe_part = NULL, vcov_arg = NULL,
                                         model_clusters = NULL, instrument_type = NULL,
-                                        approach = "density", analysis_level = "MSA", overlap_pct = NULL, instrument_form = "levels") {
+                                        approach = "density", analysis_level = "MSA", overlap_pct = NULL, instrument_form = "levels",
+                                        state_hch_coverage = NULL, state_hch_variant = NULL, state_hch_density_basis = NULL) {
     if (!length(models)) return("")
     escape <- function(x) as.character(htmltools::htmlEscape(x))
     model_names <- names(models)
@@ -2208,10 +2409,16 @@ server <- function(input, output, session) {
     else if (identical(approach, "employment"))
       note <- paste0(note, ' The instrument is the full population of the highest-density historical county meeting the ',
         escape(overlap_pct), '% overlap threshold, without area weights.')
-    if (identical(instrument_type, "historical_ch")) note <- paste0(note,
-      ' The historical instrument averages log historical reporting-area density using population allocated to each modern state by geographic overlap. It is the theta0 → 1 limit of the normalized historical CH index and is used directly.')
+    if (identical(instrument_type, "historical_ch")) {
+      note <- paste0(note, ' Historical CH construction: ', hch_variant_label(state_hch_variant),
+        '. Historical density basis: ', hch_basis_label(state_hch_density_basis),
+        '. Historical CH coverage: ', historical_ch_coverage(state_hch_coverage)$label, ' in both selected historical years.')
+      if (is.null(state_hch_variant) || identical(state_hch_variant, "historical"))
+        note <- paste0(note, ' The instrument is the population-weighted mean of the selected log historical density, used directly.')
+      else note <- paste0(note, ' The county OLS prediction uses historical density and selected geography. Standard errors and tests are conditional on the fitted county prediction.')
+    }
     note <- paste0(note, ' Instrument scale: ', instrument_units(list(instrument_type = instrument_type,
-      approach = approach, instrument_form = instrument_form)), '.')
+      approach = approach, instrument_form = instrument_form, state_hch_variant = state_hch_variant)), '.')
     if (length(diagnostic_models)) {
       note <- paste0(note, ' Instrument Wald F is the squared t statistic for the excluded instrument, using the selected standard errors and the model sample.')
     }
@@ -2284,7 +2491,9 @@ server <- function(input, output, session) {
         vcov_arg = details$vcov_arg,
         model_clusters = details$model_clusters,
         instrument_type = details$instrument_type,
-        approach = details$approach, analysis_level = details$analysis_level, overlap_pct = details$overlap_pct, instrument_form = details$instrument_form
+        approach = details$approach, analysis_level = details$analysis_level, overlap_pct = details$overlap_pct, instrument_form = details$instrument_form,
+        state_hch_coverage = details$state_hch_coverage, state_hch_variant = details$state_hch_variant,
+        state_hch_density_basis = details$state_hch_density_basis
       ))
     }
   })
@@ -2344,6 +2553,9 @@ server <- function(input, output, session) {
       '<strong>Match of Historical to Modern Geographic Units:</strong> ', instrument_name(details$instrument_type, details$approach),
       if (!is.null(details$overlap_pct)) paste0(' (', details$overlap_pct, '% overlap)') else '', '<br>',
       '<strong>Historical territory:</strong> ', details$sample_scope, '<br>',
+      if (identical(details$instrument_type, "historical_ch")) paste0('<strong>',
+        htmltools::htmlEscape(names(hch_result_metadata(details))), ':</strong> ',
+        htmltools::htmlEscape(unname(hch_result_metadata(details))), '<br>', collapse = '') else '',
       paste0('<strong>Instrument scale:</strong> ', instrument_units(details), '<br>')
     )
     
@@ -2520,6 +2732,7 @@ server <- function(input, output, session) {
       table$sample_scope <- details$sample_scope
       table$instrument_year <- details$iv_year
       table$instrument_construction <- instrument_name(details$instrument_type, details$approach)
+      table <- hch_export_metadata(table, details)
       if (length(details$model_warnings)) table$estimation_notes <- paste(details$model_warnings, collapse = "; ")
       table$instrument_units <- instrument_units(details)
       table$instrument_form <- if (is.null(details$instrument_form)) "levels" else details$instrument_form
@@ -2585,8 +2798,46 @@ server <- function(input, output, session) {
         value$statistic <- value$estimate / value$std_error
         value$p_value <- 2 * pnorm(-abs(value$statistic))
         value$county_water_year <- if (identical(details$analysis_level, "MSA")) details$county_water_year else details$water_year
+        value <- hch_export_metadata(value, details)
         value
       }))
+      utils::write.csv(table, file, row.names = FALSE, na = "")
+    })
+
+  output$download_hch_diagnostics <- downloadHandler(
+    filename = function() paste0("state-historical-ch-inputs-", valid_result()$year_modern, ".csv"),
+    content = function(file) {
+      details <- valid_result()
+      if (!identical(details$instrument_type, "historical_ch")) stop("Run a Historical CH specification first.")
+      model_states <- unique(unlist(lapply(details$models, function(model)
+        if (length(model$region_ids)) model$region_ids else details$data_for_fs$statefips[app_model_rows(model)])))
+      tables <- lapply(names(details$hch_prediction_diagnostics), function(year) {
+        value <- details$hch_prediction_diagnostics[[year]]
+        states <- as.data.frame(value$states)
+        states$record_type <- "state"
+        states$historical_year <- as.integer(year)
+        states$county_prediction_n <- value$diagnostics$nobs
+        states$in_regional_sample <- states$statefips %in% model_states
+        states$eligible_before_model <- states$statefips %in% details$data_for_fs$statefips
+        states$prediction_rmse <- if (length(value$diagnostics$rmse)) value$diagnostics$rmse else NA_real_
+        coefficients <- value$diagnostics$coefficients
+        if (length(coefficients)) {
+          fit <- data.frame(record_type = "prediction_coefficient", historical_year = as.integer(year),
+            term = names(coefficients), estimate = unname(coefficients),
+            omitted_collinear = names(coefficients) %in% value$diagnostics$omitted_regressors,
+            county_prediction_n = value$diagnostics$nobs, prediction_rmse = value$diagnostics$rmse,
+            stringsAsFactors = FALSE)
+          fit$estimate[fit$omitted_collinear] <- NA_real_
+          states <- dplyr::bind_rows(states, fit)
+        }
+        states
+      })
+      table <- dplyr::bind_rows(tables)
+      table$modern_year <- details$year_modern
+      table$sample_year <- details$sample_year
+      table$instrument_year <- details$iv_year
+      table$sample_scope <- details$sample_scope
+      table <- hch_export_metadata(table, details)
       utils::write.csv(table, file, row.names = FALSE, na = "")
     })
 
@@ -2605,13 +2856,16 @@ server <- function(input, output, session) {
       table <- create_professional_table(details$models, details$analysis_type, details$se_spec,
         details$cluster_data, details$first_stage_models, details$data_for_fs, details$controls_vec, details$fe_part, details$vcov_arg,
         model_clusters = details$model_clusters, instrument_type = details$instrument_type,
-        approach = details$approach, analysis_level = details$analysis_level, overlap_pct = details$overlap_pct, instrument_form = details$instrument_form)
+        approach = details$approach, analysis_level = details$analysis_level, overlap_pct = details$overlap_pct, instrument_form = details$instrument_form,
+        state_hch_coverage = details$state_hch_coverage, state_hch_variant = details$state_hch_variant,
+        state_hch_density_basis = details$state_hch_density_basis)
       esc <- htmltools::htmlEscape
       specifications <- c(Geography = details$analysis_level, Approach = approach_name(details$approach), Method = model_description(details), `Modern year` = details$year_modern,
         `Employment measure` = if (details$density_measure == 'CH') 'Ciccone–Hall index' else control_label('RHS', details$instrument_type, details$approach),
         Sector = c("All", "Private", "Manufacturing", "Private non-farm", "Private non-farm/mining")[details$sectors],
         `Historical sample year` = details$sample_year, `Instrument year` = details$iv_year,
         `Historical territory` = details$sample_scope, `Instrument construction` = instrument_name(details$instrument_type, details$approach),
+        hch_result_metadata(details),
         `Instrument units` = instrument_units(details),
         `Overlap threshold (%)` = details$overlap_pct, `State fixed effects` = details$fe_type,
         `Standard errors` = if (details$se_spec == "cluster_instrument") instrument_cluster_label(details) else details$se_spec, `Schooling adjustment` = schooling_adjustment_name(details$schooling_adj),

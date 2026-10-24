@@ -238,7 +238,10 @@ local({
       stopifnot(isTRUE(all.equal(as.numeric(used$instrument), expected_instrument, tolerance = 1e-12)))
       if (option$prefix == 'HCH') stopifnot(any(used$instrument < 0),
         result$instrument_form == 'historical_ch', result$log_nonpositive_n == 0L,
-        grepl('theta0 → 1 limit of the normalized historical CH index', output$results_table$html, fixed = TRUE))
+        result$state_hch_variant == 'historical', result$state_hch_density_basis == 'source',
+        grepl('Historical CH construction: Historical.', output$results_table$html, fixed = TRUE),
+        grepl('Historical density basis: Historical reporting-area density.', output$results_table$html, fixed = TRUE),
+        grepl('population-weighted mean of the selected log historical density, used directly.', output$results_table$html, fixed = TRUE))
       else stopifnot(result$instrument_form == option$scale)
       model <- result$models[[1]]
       yr <- used$LHS - mean(used$LHS)

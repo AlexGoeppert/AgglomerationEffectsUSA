@@ -1,6 +1,7 @@
 # Base-R checks for instrument units, source scope and nonlinear estimation.
 local({
   core <- new.env(parent = globalenv())
+  source("hch_prediction.R", local = core, encoding = "UTF-8")
   for (expr in parse("app.R")) {
     if (is.call(expr) && identical(expr[[1]], as.name("<-")) &&
         (is.call(expr[[3]]) && identical(expr[[3]][[1]], as.name("function")) ||

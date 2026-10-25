@@ -230,7 +230,9 @@ local({
         if (option$scale == 'log') 'Natural log of population (people)' else 'Thousands of people')
       stopifnot(is.null(map$src),
         identical(map$title, expected_map_title),
-        identical(map$message, 'A map is not available for state instruments.'))
+        identical(map$message, if (option$prefix == 'HCH')
+          'A map is not available for the historical CH instrument. Download Historical CH inputs to inspect the regional values.'
+          else 'A map is not available for state instruments.'))
       used <- used_data(result)
       original_instrument <- as.numeric(used[[index]])
       expected_instrument <- if (option$prefix == 'HCH') original_instrument else

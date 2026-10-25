@@ -257,7 +257,7 @@ fit_state_adjusted_ch <- function(data, county, components, settings = list()) {
   yr <- partial(y)
   zr <- NULL
   stock_wright <- NULL
-  if (method == "IV") {
+  if (method == "IV" && !isTRUE(settings$pilot)) {
     zscale <- max(abs(d$instrument))
     if (!is.finite(zscale) || zscale == 0) stop("The historical aggregate instrument has no variation.")
     z <- d$instrument / zscale
@@ -273,6 +273,16 @@ fit_state_adjusted_ch <- function(data, county, components, settings = list()) {
   boundary <- best %in% c(1L, length(grid))
   if (boundary && method == "OLS") fail("The adjusted CH least-squares solution is at the search boundary.")
   theta <- if (boundary) grid[best] else optimize(objective, grid[c(best - 1L, best + 1L)], tol = 1e-11)$minimum
+  if (isTRUE(settings$pilot)) {
+    if (boundary) fail("The CH NLS pilot is at the search boundary; no fixed pilot instrument can be constructed.")
+    excluded <- data.frame(state_id = as.character(data$region_id[!valid]),
+      reason = ifelse(as.character(data$region_id[!valid]) %in% bad_states,
+        "At least one county component is missing a selected adjustment input.",
+        ifelse(!as.character(data$region_id[!valid]) %in% available_states,
+          "Complete county components are unavailable.", "The aggregate outcome, instrument or selected aggregate controls are missing.")), stringsAsFactors = FALSE)
+    return(list(theta = theta, rows = rows, nobs = as.integer(n),
+      county_calibration = calibration, excluded_states = excluded, pilot = TRUE))
+  }
   roots <- theta
   if (method == "IV") {
     moment <- function(t) sum(zr * (yr - partial(index(t)$value)))

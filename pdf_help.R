@@ -40,6 +40,14 @@ pdf_help_bindings <- function() {
   }
   bindings <- c(bindings, help_msa_overlap_pct = "04", help_county_overlap_threshold = "04")
   for (level in c("msa", "state")) {
+    fields <- c(hch_method = "11", hch_gmm_steps = "11")
+    if (level == "msa") fields <- c(fields, hch_coverage = "11", hch_variant = "20", hch_density_basis = "20",
+      hch_prediction_geo_controls = "20", hch_prediction_water_controls = "20",
+      hch_prediction_transport_controls = "20", hch_prediction_water_year = "20")
+    names(fields) <- paste0("help_", level, "_", names(fields))
+    bindings <- c(bindings, fields)
+  }
+  for (level in c("msa", "state")) {
     fields <- c(ch_mode = "ch", adjustment_mode = "adjustment", county_instrument = "calibration",
       county_area = "12", geo_controls = "14", water_controls = "water",
       transport_controls = "15", water_year = "15")

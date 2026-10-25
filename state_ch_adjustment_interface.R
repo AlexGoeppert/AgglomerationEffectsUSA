@@ -273,10 +273,17 @@ prepare_county_geography <- function(input, data, level = "State", se_spec = "cl
       se_spec = se_spec, county_instrument_label = if (has_geo) instrument_name(construction) else NA_character_))
 }
 
-state_ch_adjusted_result <- function(input, data, population_missing_n, transformed) {
+state_ch_adjusted_result <- function(input, data, population_missing_n, transformed, hch_year = NULL, hch_settings = NULL) {
   prepared <- prepare_county_geography(input, data)
   warnings <- character()
-  model <- withCallingHandlers(fit_state_adjusted_ch(prepared$data, prepared$county, prepared$components, prepared$settings),
+  fit <- function(data, method) fit_state_adjusted_ch(data, prepared$county, prepared$components,
+    modifyList(prepared$settings,
+      list(method = if (method == "NLS_pilot") "IV" else method, pilot = method == "NLS_pilot")))
+  model <- withCallingHandlers(
+    if (!is.null(hch_settings)) fit_ch_with_historical_instrument(prepared$data, fit = fit,
+      hch_year = hch_year, region_ids = prepared$data$statefips,
+      instrument_method = hch_settings$instrument_method, gmm_steps = hch_settings$gmm_steps,
+      method = input$analysis_type) else fit(prepared$data, input$analysis_type),
     warning = function(w) { warnings <<- unique(c(warnings, conditionMessage(w))); invokeRestart("muffleWarning") })
   model$adjustment_mode <- prepared$mode
   model_name <- switch(prepared$mode, both = "CH: geography + human capital", human_capital = "CH: Schooling and college", geography = "CH: county geography")

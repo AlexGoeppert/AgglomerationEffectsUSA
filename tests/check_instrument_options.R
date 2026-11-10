@@ -66,7 +66,8 @@ local({
 
   # State HCH may be negative; it is neither population-scaled nor logged again.
   i <- seq_len(24)
-  state <- data.frame(year = 2010, statefips = i, state_name = paste("State", i), ch_complete = 1L,
+  fips <- c(1L,4L,5L,6L,8L,9L,10L,12L,13L,16L,17L,18L,19L,20L,21L,22L,23L,24L,25L,26L,27L,28L,29L,30L)
+  state <- data.frame(year = 2010, statefips = fips, state_name = paste("State", fips), ch_complete = 1L,
     nc1 = 10 + i^2, nc2 = 5 + i, ac1 = 500, ac2 = 600)
   state$RHS <- log((state$nc1 + state$nc2) / 1100)
   state$LHS <- 9 + core$ch_index_terms(1.08, as.matrix(state[c("nc1", "nc2")]), as.matrix(state[c("ac1", "ac2")]))$value
@@ -83,22 +84,22 @@ local({
     }
   }
   settings <- list(year_modern = "2010", state_sample_year = "1790", state_iv_year = "1900",
-    analysis_type = "IV", state_instrument_type = "historical_ch", sample_scope = "states_only", instrument_form = "log")
+    analysis_type = "IV", state_instrument_type = "historical_ch", sample_scope = "states_territories", instrument_form = "log")
   result <- core$state_ch_result(settings, state)
   stopifnot(result$n_obs == 24L, all(result$data_for_fs$instrument < 0),
-    isTRUE(all.equal(result$data_for_fs$instrument, state$HCH_1900_s, tolerance = 1e-12)), result$instrument_form == "historical_ch",
+    isTRUE(all.equal(result$data_for_fs$instrument, state$HCH_1900, tolerance = 1e-12)), result$instrument_form == "historical_ch",
     identical(result$state_hch_coverage, "80"), identical(result$hch_coverage_required, .80),
     abs(coef(result$models[[1]])[["ch_elasticity"]] - .08) < 1e-7)
   # Raw moments determine eligibility; masked build fields and omission flags do not.
   for (year in c(1790, 1900)) {
-    state[[paste0("HCHcover_", year, "_s")]] <- .8
-    state[[paste0("HCHmiss_", year, "_s")]] <- 1L
-    state[[paste0("HCHtie_", year, "_s")]] <- 1L
-    state[[paste0("AWgap_", year, "_s")]] <- 1L
-    state[[paste0("AWunallocated_", year, "_s")]] <- 100
-    state[[paste0("HCH_", year, "_s")]] <- NA_real_
-    state[[paste0("HCHpop_", year, "_s")]] <- NA_real_
-    state[[paste0("HCHvalid_", year, "_s")]] <- 0L
+    state[[paste0("HCHcover_", year, "")]] <- .8
+    state[[paste0("HCHmiss_", year, "")]] <- 1L
+    state[[paste0("HCHtie_", year, "")]] <- 1L
+    state[[paste0("AWgap_", year, "")]] <- 1L
+    state[[paste0("AWunallocated_", year, "")]] <- 100
+    state[[paste0("HCH_", year, "")]] <- NA_real_
+    state[[paste0("HCHpop_", year, "")]] <- NA_real_
+    state[[paste0("HCHvalid_", year, "")]] <- 0L
   }
   flagged <- core$state_ch_result(settings, state)
   stopifnot(flagged$n_obs == result$n_obs,
@@ -109,28 +110,28 @@ local({
     stopifnot(identical(result$data_for_fs$instrument, log(100 + i^2)), result$instrument_form == "log",
       abs(coef(result$models[[1]])[["ch_elasticity"]] - .08) < 1e-7)
   }
-  state$HCHobs_1900_s[1] <- 0
-  state$HCHcover_1790_s[2] <- .79
+  state$HCHobs_1900[1] <- 0
+  state$HCHcover_1790[2] <- .79
   result <- core$state_ch_result(settings, state)
   stopifnot(result$n_obs == 22L, result$population_missing_n == 2L)
 
   # Apply the same selected coverage rule separately to both historical years.
   selected <- state
-  selected$HCHobs_1900_s <- 100 + i
-  selected$HCHcover_1790_s <- selected$HCHcover_1900_s <- rep(1, length(i))
-  selected$HCHcover_1790_s[1:5] <- c(.79, .80, .9499, .95, NA)
-  selected$HCHcover_1900_s[6:10] <- c(.79, .80, .9499, .95, -.1)
-  selected$HCHobs_1790_s[11:12] <- c(0, NA)
-  selected$HCHnumer_1900_s[13] <- Inf
-  selected$HCHobs_1900_s[14] <- Inf
-  selected$HCHnumer_1790_s[15] <- NA
+  selected$HCHobs_1900 <- 100 + i
+  selected$HCHcover_1790 <- selected$HCHcover_1900 <- rep(1, length(i))
+  selected$HCHcover_1790[1:5] <- c(.79, .80, .9499, .95, NA)
+  selected$HCHcover_1900[6:10] <- c(.79, .80, .9499, .95, -.1)
+  selected$HCHobs_1790[11:12] <- c(0, NA)
+  selected$HCHnumer_1900[13] <- Inf
+  selected$HCHobs_1900[14] <- Inf
+  selected$HCHnumer_1790[15] <- NA
   base_excluded <- c(5L, 10:15)
   for (choice in c("80", "95", "none")) for (method in c("IV", "OLS")) {
     excluded <- switch(choice, `80` = c(base_excluded, 1L, 6L),
       `95` = c(base_excluded, 1:3, 6:8), none = base_excluded)
     fit <- core$state_ch_result(modifyList(settings,
       list(state_hch_coverage = choice, analysis_type = method)), selected)
-    stopifnot(identical(as.integer(fit$data_for_fs$statefips), setdiff(i, excluded)),
+    stopifnot(identical(as.integer(fit$data_for_fs$statefips), fips[setdiff(i, excluded)]),
       fit$population_missing_n == length(unique(excluded)), fit$state_hch_coverage == choice,
       abs(coef(fit$models[[1]])[["ch_elasticity"]] - .08) < 1e-7)
   }

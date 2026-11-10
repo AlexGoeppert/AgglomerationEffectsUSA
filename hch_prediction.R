@@ -9,7 +9,8 @@ get_hch_county_moments <- local({
     if (!identical(current, signature)) {
       value <- as.data.frame(haven::read_dta(path))
       required <- c("geofips", "statefips", "historical_year", "modern_area_km2",
-        "pop", "numer", "known_area_km2", "pop_s", "numer_s", "known_area_km2_s")
+        "pop", "numer", "known_area_km2", "pop_s", "numer_s", "known_area_km2_s",
+        "pop_sy", "numer_sy", "known_area_km2_sy")
       if (!all(required %in% names(value)) || anyDuplicated(value[c("geofips", "historical_year")]))
         stop("Historical CH county moments have missing fields or repeated counties.")
       cached <<- value
@@ -28,14 +29,14 @@ hch_prediction_year <- function(county_moments, modern_components, geo_data = NU
       stop(paste("Choose a valid", description, "."))
     as.character(value)
   }
-  scope <- choice(scope, c("states_only", "states_territories"), "historical scope")
+  scope <- choice(scope, c("states_only", "states_yearend", "states_territories"), "historical scope")
   basis <- choice(basis, c("source", "modern"), "historical density basis")
   variant <- choice(variant, c("historical", "a", "b", "ab"), "historical CH variant")
   if (length(historical_year) != 1L || !is.finite(historical_year) ||
       !historical_year %in% seq(1790, 1900, 10)) stop("Choose a historical census year from 1790 to 1900.")
   if (length(minimum) != 1L || !is.finite(minimum) || !minimum %in% c(0, .80, .95))
     stop("Historical CH coverage must be 80%, 95%, or No coverage filter.")
-  suffix <- if (scope == "states_only") "_s" else ""
+  suffix <- switch(scope, states_only = "_s", states_yearend = "_sy", states_territories = "")
   required <- c("geofips", "statefips", "historical_year", "modern_area_km2",
     paste0(c("pop", "numer", "known_area_km2"), suffix))
   if (!all(required %in% names(county_moments))) stop("Historical CH county moment fields are missing.")
@@ -225,7 +226,8 @@ get_hch_source_pieces <- local({
     current <- paste(normalizePath(path, winslash = "/"), info$size, as.numeric(info$mtime), sep = "|")
     if (!identical(current, signature)) {
       value <- as.data.frame(haven::read_dta(path))
-      required <- c("geofips", "historical_year", "source_log_density", "allocated_population", "in_historical_state")
+      required <- c("geofips", "historical_year", "source_log_density", "allocated_population", "in_historical_state",
+        "in_historical_state_yearend")
       if (!all(required %in% names(value))) stop("Historical CH source-piece fields are missing.")
       if (any(!is.finite(value$allocated_population) | value$allocated_population <= 0) ||
           any(!is.finite(value$source_log_density))) stop("Historical CH source pieces need positive known population and finite density.")
@@ -251,6 +253,11 @@ hch_fixed_instrument <- function(hch_year, theta, source_pieces = NULL) {
     pieces <- source_pieces[source_pieces$historical_year == meta$historical_year, , drop = FALSE]
     if (identical(meta$scope, "states_only"))
       pieces <- pieces[!is.na(pieces$in_historical_state) & pieces$in_historical_state == 1, , drop = FALSE]
+    if (identical(meta$scope, "states_yearend")) {
+      if (!"in_historical_state_yearend" %in% names(pieces))
+        stop("Historical CH source pieces lack the calendar-year State scope. Rebuild the historical CH inputs.")
+      pieces <- pieces[!is.na(pieces$in_historical_state_yearend) & pieces$in_historical_state_yearend == 1, , drop = FALSE]
+    }
     member <- match(pieces$geofips, d$geofips)
     pieces <- pieces[!is.na(member), , drop = FALSE]
     member <- member[!is.na(member)]

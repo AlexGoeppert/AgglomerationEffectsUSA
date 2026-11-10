@@ -19,8 +19,20 @@ required <- unlist(lapply(app$historical_census_years, function(year)
     "HCHobs_", "HCHnumer_", "HCHcover_"), each = 2L), year, c("", "_s"))))
 missing <- setdiff(required, names(app$state_data))
 if (length(missing)) stop(paste("State panel is missing required historical fields:", paste(missing, collapse = ", ")))
+yearend_required <- sub("_s$", "_sy", grep("_s$", required, value = TRUE))
+stopifnot(all(yearend_required %in% names(app$state_data)))
 stopifnot(identical(sort(unique(as.integer(app$state_data$year))), 2001:2022),
   all(table(app$state_data$year) == 48L), !any(app$state_data$statefips %in% c(2, 11, 15)))
+for (case in list(c(6L, 1850L), c(16L, 1890L), c(56L, 1890L))) {
+  selected <- app$state_data[app$state_data$year == 2010 & app$state_data$statefips == case[1], , drop = FALSE]
+  stopifnot(nrow(selected) == 1L, app$state_admission_year(selected$statefips) == case[2],
+    selected[[paste0("HCHobs_", case[2], "_sy")]] > selected[[paste0("HCHobs_", case[2], "_s")]])
+}
+for (year in setdiff(app$historical_census_years, c(1850L, 1890L))) {
+  old <- grep(paste0("^(GG|AW|HCH).*_", year, "_s$"), names(app$state_data), value = TRUE)
+  for (field in old) stopifnot(isTRUE(all.equal(as.numeric(app$state_data[[field]]),
+    as.numeric(app$state_data[[sub("_s$", "_sy", field)]]), tolerance = 1e-12)))
+}
 # Check the build rule from unmasked moments, not the already-masked index.
 for (year in app$historical_census_years) for (suffix in c("", "_s")) {
   field <- function(stem) app$state_data[[paste0(stem, "_", year, suffix)]]
@@ -78,6 +90,24 @@ check_estimate <- function(result) {
 years <- app$historical_census_years
 rows <- list()
 for (year in years) for (construction in c('county_population', 'area_population')) for (scope in c('states_only', 'states_territories')) for (method in c('OLS', 'IV')) {
+  # With only the thirteen admitted states, these two 1790 IV samples have no
+  # positive-theta solution. The interface must report this rather than expand
+  # the sample or replace the failed estimate.
+  if (year == 1790L && scope == 'states_only' && method == 'IV') {
+    expected_n <- if (construction == 'county_population') 10L else 8L
+    shiny::testServer(app$server, {
+      session$setInputs(analysis_level = 'State', year_modern = '2010', analysis_type = 'IV',
+        state_sample_year = '1790', state_iv_year = '1790', state_instrument_type = construction,
+        sample_scope = 'states_only', instrument_form = 'levels', show_map = FALSE, run_analysis = 1)
+      failed <- isolate(analysis_output())
+      stopifnot(grepl('No positive-theta IV solution was found', failed$error, fixed = TRUE),
+        failed$stock_wright$status == 'available', failed$stock_wright$nobs == expected_n,
+        output$results_header == 'Analysis Error',
+        grepl('No positive-theta IV solution was found', output$results_table$html, fixed = TRUE))
+    })
+    cat('State app correctly reports no IV root:', year, construction, scope, 'N', expected_n, '\n')
+    next
+  }
   result <- NULL
   shiny::testServer(app$server, {
     session$setInputs(analysis_level = 'State', year_modern = '2010', analysis_type = method,
@@ -96,11 +126,11 @@ for (year in years) for (construction in c('county_population', 'area_population
     model <- result$models[[1]]
     check_estimate(result)
     prefix <- if (construction == 'county_population') 'GG' else 'AW'
-    suffix <- if (scope == 'states_only') '_s' else ''
+    suffix <- if (scope == 'states_only') '_sy' else ''
     stopifnot(isTRUE(all.equal(result$data_for_fs$instrument,
       as.numeric(result$data_for_fs[[paste0(prefix, 'pop_', year, suffix)]]) / 1000, check.attributes = FALSE)),
       all(result$data_for_fs[[paste0(prefix, 'valid_', year, suffix)]] == 1L))
-    stopifnot(all(is.finite(coef(model))), all(is.finite(vcov(model))), nobs(model) <= 48)
+    stopifnot(all(is.finite(coef(model))), all(is.finite(vcov(model))), nobs(model) <= if (scope == 'states_only') sum(app$state_admission_year(unique(app$state_data$statefips)) <= year) else 48L)
     if (method == 'IV') {
       used <- result$data_for_fs[model$rows, ]
       score <- (used$LHS - mean(used$LHS)) * (used$instrument - mean(used$instrument))
@@ -178,7 +208,7 @@ for (construction in c('county_population', 'area_population')) for (scope in c(
     state_sample_year = '1870', state_iv_year = '1900', state_instrument_type = construction,
     sample_scope = scope), app$state_data)
   prefix <- if (construction == 'county_population') 'GG' else 'AW'
-  suffix <- if (scope == 'states_only') '_s' else ''
+  suffix <- if (scope == 'states_only') '_sy' else ''
   stopifnot(all(result$data_for_fs[[paste0(prefix, 'valid_1870', suffix)]] == 1L),
     all(result$data_for_fs[[paste0(prefix, 'valid_1900', suffix)]] == 1L))
   check_estimate(result)
@@ -201,7 +231,7 @@ local({
   scope_members <- list()
   run_option <- function(option, scope, sample) {
     result <- NULL
-    suffix <- if (scope == 'states_only') '_s' else ''
+    suffix <- if (scope == 'states_only') '_sy' else ''
     index <- paste0(if (option$prefix == 'HCH') 'HCH_' else paste0(option$prefix, 'pop_'), '1900', suffix)
     valid <- paste0(option$prefix, 'valid_1900', suffix)
     panel <- app$state_data[app$state_data$year == 2020, , drop = FALSE]
@@ -323,7 +353,7 @@ local({
   original_state <- app$state_data
   on.exit({app$state_data <- original_state})
   fixture <- original_state
-  retained <- which(fixture$year == 2010)
+  retained <- which(fixture$year == 2010 & app$state_admission_year(fixture$statefips) <= 1900L)
   i <- seq_along(retained)
   n <- cbind(exp(1 + i / 25), exp(.5 + sin(i * .31)))
   a <- cbind(rep(1, length(i)), rep(2, length(i)))
@@ -344,8 +374,8 @@ local({
   fixture$LHS[retained] <- y
   fixture$RHS[retained] <- log(rowSums(n) / rowSums(a))
   fixture$ch_complete[retained] <- 1L
-  fixture$AWpop_1900_s[retained] <- (z - min(z) + 1) * 1000
-  fixture$AWvalid_1900_s[retained] <- 1L
+  fixture$AWpop_1900_sy[retained] <- (z - min(z) + 1) * 1000
+  fixture$AWvalid_1900_sy[retained] <- 1L
   app$state_data <- fixture
   shiny::testServer(app$server, {
     session$setInputs(analysis_level = 'State', year_modern = '2010', analysis_type = 'IV',
@@ -386,8 +416,8 @@ local({
   bad$LHS[retained] <- -10 * density
   bad$RHS[retained] <- density
   bad$ch_complete[retained] <- 1L
-  bad$AWpop_1900_s[retained] <- density * 1000
-  bad$AWvalid_1900_s[retained] <- 1L
+  bad$AWpop_1900_sy[retained] <- density * 1000
+  bad$AWvalid_1900_sy[retained] <- 1L
   app$state_data <- bad
   shiny::testServer(app$server, {
     session$setInputs(analysis_level = 'State', year_modern = '2010', analysis_type = 'IV',

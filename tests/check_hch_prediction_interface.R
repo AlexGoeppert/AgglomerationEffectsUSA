@@ -29,10 +29,13 @@ for (basis in c("source", "modern")) for (variant in c("historical", "a", "b", "
   chosen <- modifyList(settings, list(state_hch_variant = variant, state_hch_density_basis = basis))
   result <- app$state_ch_result(chosen, app$state_data)
   stopifnot(result$state_hch_variant == variant, result$state_hch_density_basis == basis,
-    is.finite(coef(result$models[[1]])["ch_elasticity"]))
+    is.finite(coef(result$models[[1]])["ch_elasticity"]),
+    result$statehood_cutoff_year == 1790L, result$statehood_eligible_n == 13L,
+    result$n_obs <= 13L, all(app$state_admission_year(result$data_for_fs$statefips) <= 1790L))
   sample <- result$hch_prediction_diagnostics[["1790"]]$states
   instrument <- result$hch_prediction_diagnostics[["1900"]]$states
   expected <- intersect(sample$statefips[sample$keep], instrument$statefips[instrument$keep])
+  expected <- expected[app$state_admission_year(expected) <= as.integer(settings$state_sample_year)]
   stopifnot(setequal(result$data_for_fs$statefips, expected),
     isTRUE(all.equal(result$data_for_fs$instrument,
       instrument$index[match(result$data_for_fs$statefips, instrument$statefips)], tolerance = 1e-12)))
@@ -70,9 +73,16 @@ shiny::testServer(app$server, {
   diagnostics <- read.csv(output$download_hch_diagnostics, stringsAsFactors = FALSE)
   stopifnot(all(coefficients$historical_ch_variant == "ab"),
     all(coefficients$historical_ch_density_basis == "modern"),
+    all(coefficients$statehood_cutoff_year == 1790L),
+    all(coefficients$statehood_eligible_n == 13L),
+    all(coefficients$statehood_excluded_n == 35L),
+    grepl("Admitted to the Union by the end of 1790", output$analysis_details$html, fixed = TRUE),
     setequal(diagnostics$historical_year, c(1790L, 1900L)),
     setequal(diagnostics$record_type, c("state", "prediction_coefficient")),
     all(diagnostics$historical_ch_variant == "ab"))
+  state_rows <- diagnostics[diagnostics$record_type == "state", , drop = FALSE]
+  stopifnot(identical(as.logical(state_rows$eligible_by_statehood),
+    app$state_admission_year(state_rows$statefips) <= 1790L))
   session$setInputs(state_hch_variant = "historical", state_hch_density_basis = "source")
   stopifnot(isolate(analysis_output())$state_hch_variant == "ab")
   coefficients <- read.csv(output$download_coefficients, stringsAsFactors = FALSE)

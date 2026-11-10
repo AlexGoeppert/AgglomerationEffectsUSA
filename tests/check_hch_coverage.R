@@ -5,7 +5,7 @@ check_hch_coverage_options <- function(app) {
     show_map = FALSE, use_fe = FALSE)
   panel <- app$state_data[app$state_data$year == 2010, , drop = FALSE]
   expected_ids <- function(choice, scope) {
-    suffix <- if (scope == "states_only") "_s" else ""
+    suffix <- if (scope == "states_only") "_sy" else ""
     population <- panel[[paste0("HCHobs_1790", suffix)]]
     numerator <- panel[[paste0("HCHnumer_1790", suffix)]]
     coverage <- panel[[paste0("HCHcover_1790", suffix)]]
@@ -13,6 +13,7 @@ check_hch_coverage_options <- function(app) {
     keep <- is.finite(population) & population > 0 & is.finite(numerator) &
       is.finite(numerator / population) & is.finite(coverage) & coverage >= minimum &
       is.finite(panel$LHS) & is.finite(panel$RHS)
+    if (scope == "states_only") keep <- keep & app$state_admission_year(panel$statefips) <= 1790L
     sort(as.integer(panel$statefips[keep]))
   }
   shiny::testServer(app$server, {

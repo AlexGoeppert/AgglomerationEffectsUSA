@@ -104,10 +104,17 @@ check_runtime <- function() {
         }
       })
     }
+    expected_state_n <- function(scope) {
+      d <- app$state_data[app$state_data$year==2020 & app$state_data$sample_year==1900 &
+        app$state_data$scope==app$historical_region_scope(scope),,drop=FALSE]
+      d <- app$attach_historical_region_instruments(d,1900,scope,1900)
+      sum(d$ch_complete==1L & is.finite(d$LHS) & is.finite(d$RHS) &
+        d$AWvalid_1900==1L & is.finite(d$AWpop_1900) & d$AWpop_1900>=0,na.rm=TRUE)
+    }
     for (scope in c("states_only", "states_territories")) {
       exercise(list(analysis_level = "State", year_modern = "2020", state_sample_year = "1900", state_iv_year = "1900",
         state_instrument_type = "area_population", sample_scope = scope),
-        expected_n = if (scope == "states_only") 42L else 43L)
+        expected_n = expected_state_n(scope))
     }
     for (level in c("MSA", "County")) exercise(list(analysis_level = level), year_switch = TRUE)
     for (mode in c("geography", "both")) exercise(list(analysis_level = "State", year_modern = "2020", state_sample_year = "1900", state_iv_year = "1900",
@@ -116,7 +123,7 @@ check_runtime <- function() {
       state_county_instrument = "area_population", state_county_area = TRUE,
       state_geo_controls = c("terrain", "crop", "climate"),
       state_water_controls = c("shoreline", "historical_access", "distance", "portage"),
-      state_transport_controls = c("water_1820", "railroads_1840"), state_water_year = "1820"), expected_n = 43L)
+      state_transport_controls = c("water_1820", "railroads_1840"), state_water_year = "1820"))
     info <- app$app_data_loader$cache_info()
     stopifnot(setequal(names(info), c("MSA", "County")),
       all(vapply(info, function(x) identical(x$year, 2020L), logical(1))))

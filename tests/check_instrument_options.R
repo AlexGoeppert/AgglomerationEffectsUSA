@@ -67,7 +67,8 @@ local({
   # State HCH may be negative; it is neither population-scaled nor logged again.
   i <- seq_len(24)
   fips <- c(1L,4L,5L,6L,8L,9L,10L,12L,13L,16L,17L,18L,19L,20L,21L,22L,23L,24L,25L,26L,27L,28L,29L,30L)
-  state <- data.frame(year = 2010, statefips = fips, state_name = paste("State", fips), ch_complete = 1L,
+  state <- data.frame(year = 2010, sample_year = 1790, scope = "states_and_territories",
+    region_id = paste0("group_",fips), region_name = paste("Historical group", fips), ch_complete = 1L,
     nc1 = 10 + i^2, nc2 = 5 + i, ac1 = 500, ac2 = 600)
   state$RHS <- log((state$nc1 + state$nc2) / 1100)
   state$LHS <- 9 + core$ch_index_terms(1.08, as.matrix(state[c("nc1", "nc2")]), as.matrix(state[c("ac1", "ac2")]))$value
@@ -83,6 +84,11 @@ local({
       state[[paste0(prefix, "valid_", year, suffix)]] <- 1L
     }
   }
+  source("historical_state_regions.R", local = core, encoding = "UTF-8")
+  core$get_historical_state_membership <- function(...) state[c("region_id","region_name")]
+  core$historical_state_components <- function(...) NULL
+  core$historical_state_wide <- function(data,parts) data
+  core$attach_historical_region_instruments <- function(data,...) data
   settings <- list(year_modern = "2010", state_sample_year = "1790", state_iv_year = "1900",
     analysis_type = "IV", state_instrument_type = "historical_ch", sample_scope = "states_territories", instrument_form = "log")
   result <- core$state_ch_result(settings, state)
@@ -131,7 +137,7 @@ local({
       `95` = c(base_excluded, 1:3, 6:8), none = base_excluded)
     fit <- core$state_ch_result(modifyList(settings,
       list(state_hch_coverage = choice, analysis_type = method)), selected)
-    stopifnot(identical(as.integer(fit$data_for_fs$statefips), fips[setdiff(i, excluded)]),
+    stopifnot(identical(fit$data_for_fs$region_id, paste0("group_",fips[setdiff(i, excluded)])),
       fit$population_missing_n == length(unique(excluded)), fit$state_hch_coverage == choice,
       abs(coef(fit$models[[1]])[["ch_elasticity"]] - .08) < 1e-7)
   }

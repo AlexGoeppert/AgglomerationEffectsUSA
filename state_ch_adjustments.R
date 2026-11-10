@@ -225,8 +225,13 @@ fit_state_adjusted_ch <- function(data, county, components, settings = list()) {
   state_levels <- as.character(d$region_id)
   components <- components[as.character(components$region_id) %in% state_levels, , drop = FALSE]
   if (calibrate_geography) {
-    # All constituent states contribute calibration counties, including nonmetro counties.
-    county <- county[as.character(county$state_id) %in% unique(as.character(components$state_id)), , drop = FALSE]
+    if (isTRUE(settings$calibration_by_region)) {
+      if (!"region_id" %in% names(county)) stop("County calibration requires a historical region identifier.")
+      county <- county[as.character(county$region_id) %in% state_levels, , drop = FALSE]
+    } else {
+      # MSA calibration includes nonmetro counties in the constituent modern states.
+      county <- county[as.character(county$state_id) %in% unique(as.character(components$state_id)), , drop = FALSE]
+    }
     hc <- sca_human_capital(county, mode, beta_school, kappa_college, settings$schooling_reference)
     county$y <- county$y - hc$h - hc$college_effect
     calibration <- sca_county_fit(county, geo_vars, settings$county_controls, method, isTRUE(settings$county_fe))

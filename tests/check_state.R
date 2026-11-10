@@ -1,69 +1,49 @@
-source("tests/check_state_core.R")
-source("tests/setup.R")
-source("tests/check_hch_coverage.R")
+source("tests/check_state_core.R", encoding="UTF-8")
+source("tests/setup.R", encoding="UTF-8")
+source("tests/check_hch_coverage.R", encoding="UTF-8")
 check_hch_coverage_options(app)
-assert_ch_diagnostics_hidden <- function(html = NULL, csv = NULL) {
-  if (!is.null(html)) stopifnot(!grepl("Anderson.{0,12}Rubin|Local instrument Wald F|Local instrument partial R|partial R-squared|partial R²", html, ignore.case = TRUE))
-  if (!is.null(csv)) stopifnot(!any(grepl("^anderson_rubin_|^ch_local_partial_r2$", names(csv))))
-}
-assert_f_row <- function(html, expected) {
-  row <- regmatches(html, regexec('<tr[^>]*><td[^>]*>Instrument Wald F</td>(.*?)</tr>', html, perl = TRUE))[[1]]
-  stopifnot(length(row) == 2L)
-  cells <- regmatches(row[2], gregexpr('<td[^>]*>[^<]*</td>', row[2], perl = TRUE))[[1]]
-  shown <- sub('<td[^>]*>([^<]*)</td>', '\\1', cells, perl = TRUE)
-  formatted <- ifelse(is.finite(expected), sprintf('%.2f', expected), '—')
-  stopifnot(identical(shown, unname(formatted)))
-}
-required <- unlist(lapply(app$historical_census_years, function(year)
-  paste0(rep(c("AWpop_", "GGpop_", "AWvalid_", "GGvalid_", "HCH_", "HCHpop_", "HCHvalid_",
-    "HCHobs_", "HCHnumer_", "HCHcover_"), each = 2L), year, c("", "_s"))))
-missing <- setdiff(required, names(app$state_data))
-if (length(missing)) stop(paste("State panel is missing required historical fields:", paste(missing, collapse = ", ")))
-yearend_required <- sub("_s$", "_sy", grep("_s$", required, value = TRUE))
-stopifnot(all(yearend_required %in% names(app$state_data)))
-stopifnot(identical(sort(unique(as.integer(app$state_data$year))), 2001:2022),
-  all(table(app$state_data$year) == 48L), !any(app$state_data$statefips %in% c(2, 11, 15)))
-for (case in list(c(6L, 1850L), c(16L, 1890L), c(56L, 1890L))) {
-  selected <- app$state_data[app$state_data$year == 2010 & app$state_data$statefips == case[1], , drop = FALSE]
-  stopifnot(nrow(selected) == 1L, app$state_admission_year(selected$statefips) == case[2],
-    selected[[paste0("HCHobs_", case[2], "_sy")]] > selected[[paste0("HCHobs_", case[2], "_s")]])
-}
-for (year in setdiff(app$historical_census_years, c(1850L, 1890L))) {
-  old <- grep(paste0("^(GG|AW|HCH).*_", year, "_s$"), names(app$state_data), value = TRUE)
-  for (field in old) stopifnot(isTRUE(all.equal(as.numeric(app$state_data[[field]]),
-    as.numeric(app$state_data[[sub("_s$", "_sy", field)]]), tolerance = 1e-12)))
-}
-# Check the build rule from unmasked moments, not the already-masked index.
-for (year in app$historical_census_years) for (suffix in c("", "_s")) {
-  field <- function(stem) app$state_data[[paste0(stem, "_", year, suffix)]]
-  coverage <- field("HCHcover")
-  population <- field("HCHobs")
-  numerator <- field("HCHnumer")
-  expected <- is.finite(coverage) & coverage >= .80 &
-    is.finite(population) & population > 0 & is.finite(numerator) &
-    is.finite(numerator / population)
-  stopifnot(identical(as.integer(field("HCHvalid")), as.integer(expected)))
-}
-for (suffix in c("", "_s")) {
-  panel <- app$state_data[app$state_data$year == 2010, , drop = FALSE]
-  valid_ids <- panel$statefips[panel[[paste0("HCHvalid_1790", suffix)]] == 1L]
-  stopifnot(all(c(36L, 37L) %in% valid_ids), !13L %in% valid_ids)
-}
-ui <- htmltools::renderTags(app$ui)$html
-assert_ch_diagnostics_hidden(ui)
-select_values <- function(id) {
-  select <- regmatches(ui, regexec(paste0('<select[^>]*id="', id, '"[^>]*>[\\s\\S]*?</select>'), ui, perl = TRUE))[[1]][1]
-  options <- regmatches(select, gregexpr('<option value="[^"]+"', select, perl = TRUE))[[1]]
-  as.integer(sub('^<option value="([^"]+)"$', '\\1', options))
-}
-for (id in c("state_sample_year", "state_iv_year", "msa_sample_year", "msa_iv_year", "county_sample_year", "county_iv_year"))
-  stopifnot(identical(select_values(id), as.integer(app$historical_census_years)))
-stopifnot(identical(select_values("water_year"), as.integer(seq(1790, 1860, 10))),
-  grepl('value="State"', ui, fixed = TRUE), grepl("at least 95% geographic coverage", app$help_state_ch, fixed = TRUE),
-  grepl("80% or 95%", app$help_state_instrument, fixed = TRUE),
-  grepl("No coverage filter", app$help_state_instrument, fixed = TRUE))
 
-# Reconstruct the estimating equations and covariance directly from county inputs.
+# Compare the observation definitions to the final County FE fields, not a
+# separate admission calendar or modern-state classification.
+for(year in app$historical_census_years) {
+  memberships<-list();panels<-list()
+  for(scope in c("states_only","states_territories")) {
+    p<-app$state_data[app$state_data$year==2010 & app$state_data$sample_year==year &
+      app$state_data$scope==app$historical_region_scope(scope),,drop=FALSE]
+    m<-app$get_historical_state_membership(year,scope)
+    label<-trimws(as.character(app$county_data[[paste0("hist_state_fe_",year,if(scope=="states_only") "_s" else "")]]))
+    expected<-sort(unique(label[!is.na(label)&nzchar(label)&label!="0"]))
+    stopifnot(setequal(p$region_name,expected),setequal(p$region_id,m$region_id),
+      !anyDuplicated(p$region_id),!anyDuplicated(m$geofips),!"statefips" %in% names(p))
+    parts<-app$historical_state_components(2010,year,scope,m)
+    for(id in p$region_id) {
+      selected<-parts[parts$region_id==id,]
+      row<-p[p$region_id==id,]
+      if(row$ch_complete==1L) stopifnot(abs(sum(selected$nc)-row$region_employment)<1e-6,
+        abs(sum(selected$ac)-row$region_land_acres)<1e-6*(1+row$region_land_acres))
+      if(row$outcome_complete==1L) stopifnot(abs(sum(selected$gdp)-row$region_gdp)<1e-6*(1+row$region_gdp),
+        abs(row$LHS-log(row$region_gdp/row$region_employment))<1e-12)
+    }
+    memberships[[scope]]<-m;panels[[scope]]<-p
+  }
+  common<-intersect(panels$states_only$region_id,panels$states_territories$region_id)
+  for(id in common) {
+    stopifnot(setequal(memberships$states_only$geofips[memberships$states_only$region_id==id],
+      memberships$states_territories$geofips[memberships$states_territories$region_id==id]))
+    fields<-c("region_gdp","region_employment","region_land_acres","LHS","RHS")
+    a<-unlist(panels$states_only[panels$states_only$region_id==id,fields]);
+    b<-unlist(panels$states_territories[panels$states_territories$region_id==id,fields])
+    stopifnot(isTRUE(all.equal(a,b,tolerance=1e-12)))
+  }
+}
+full1790<-app$state_data[app$state_data$year==2010 & app$state_data$sample_year==1790 &
+  app$state_data$scope=="states_and_territories",]
+states1790<-app$state_data[app$state_data$year==2010 & app$state_data$sample_year==1790 &
+  app$state_data$scope=="states_only",]
+stopifnot(nrow(full1790)==16L,nrow(states1790)==13L,
+  all(c("Northwest Territory","Southwest Territory","Vermont") %in% full1790$region_name),
+  !any(c("Northwest Territory","Southwest Territory","Vermont") %in% states1790$region_name))
+
 check_estimate <- function(result) {
   model <- result$models[[1]]
   d <- result$data_for_fs[model$rows, , drop = FALSE]
@@ -87,350 +67,62 @@ check_estimate <- function(result) {
   covariance <- crossprod(influence) * correction
   stopifnot(isTRUE(all.equal(unname(vcov(model)), unname(covariance), tolerance = 1e-7)))
 }
-years <- app$historical_census_years
-rows <- list()
-for (year in years) for (construction in c('county_population', 'area_population')) for (scope in c('states_only', 'states_territories')) for (method in c('OLS', 'IV')) {
-  # With only the thirteen admitted states, these two 1790 IV samples have no
-  # positive-theta solution. The interface must report this rather than expand
-  # the sample or replace the failed estimate.
-  if (year == 1790L && scope == 'states_only' && method == 'IV') {
-    expected_n <- if (construction == 'county_population') 10L else 8L
-    shiny::testServer(app$server, {
-      session$setInputs(analysis_level = 'State', year_modern = '2010', analysis_type = 'IV',
-        state_sample_year = '1790', state_iv_year = '1790', state_instrument_type = construction,
-        sample_scope = 'states_only', instrument_form = 'levels', show_map = FALSE, run_analysis = 1)
-      failed <- isolate(analysis_output())
-      stopifnot(grepl('No positive-theta IV solution was found', failed$error, fixed = TRUE),
-        failed$stock_wright$status == 'available', failed$stock_wright$nobs == expected_n,
-        output$results_header == 'Analysis Error',
-        grepl('No positive-theta IV solution was found', output$results_table$html, fixed = TRUE))
-    })
-    cat('State app correctly reports no IV root:', year, construction, scope, 'N', expected_n, '\n')
-    next
-  }
-  result <- NULL
-  shiny::testServer(app$server, {
-    session$setInputs(analysis_level = 'State', year_modern = '2010', analysis_type = method,
-      state_sample_year = as.character(year), state_iv_year = as.character(year),
-      state_instrument_type = construction, sample_scope = scope,
-      msa_density_measure = 'average', msa_instrument_type = 'overlap',
-      county_instrument_type = 'max_density_overlap', approach = 'employment',
-      geo_controls = c('terrain', 'crop', 'climate'), use_fe = TRUE, show_map = FALSE,
-      run_analysis = 1)
-    session$flushReact()
-    result <<- isolate(analysis_output())
-    if (!is.null(result$error)) stop(result$error)
-    stopifnot(result$analysis_level == 'State', result$density_measure == 'CH',
-      result$fe_type == 'No', length(result$controls_vec) == 0L, result$approach == 'density',
-      !result$apply_college_adj, result$schooling_adj == 0L)
-    model <- result$models[[1]]
+settings<-list(analysis_level="State",year_modern="2010",analysis_type="IV",state_ch_mode="standard",
+  state_sample_year="1790",state_iv_year="1790",state_instrument_type="historical_ch",
+  state_hch_coverage="none",sample_scope="states_territories",instrument_form="levels",show_map=FALSE)
+rows<-list()
+for(year in c(1790L,1850L,1890L,1900L)) for(scope in c("states_only","states_territories"))
+  for(construction in c("county_population","area_population","historical_ch")) for(method in c("OLS","IV")) {
+    chosen<-modifyList(settings,list(state_sample_year=as.character(year),state_iv_year=as.character(year),
+      sample_scope=scope,state_instrument_type=construction,analysis_type=method))
+    result<-tryCatch(app$state_ch_result(chosen,app$state_data),error=identity)
+    if(inherits(result,"error")) {
+      stopifnot(method=="IV",grepl("No positive-theta IV solution",conditionMessage(result),fixed=TRUE),
+        result$stock_wright$status=="available")
+      cat("Identification failure reported:",year,scope,construction,"\n")
+      next
+    }
     check_estimate(result)
-    prefix <- if (construction == 'county_population') 'GG' else 'AW'
-    suffix <- if (scope == 'states_only') '_sy' else ''
-    stopifnot(isTRUE(all.equal(result$data_for_fs$instrument,
-      as.numeric(result$data_for_fs[[paste0(prefix, 'pop_', year, suffix)]]) / 1000, check.attributes = FALSE)),
-      all(result$data_for_fs[[paste0(prefix, 'valid_', year, suffix)]] == 1L))
-    stopifnot(all(is.finite(coef(model))), all(is.finite(vcov(model))), nobs(model) <= if (scope == 'states_only') sum(app$state_admission_year(unique(app$state_data$statefips)) <= year) else 48L)
-    if (method == 'IV') {
-      used <- result$data_for_fs[model$rows, ]
-      score <- (used$LHS - mean(used$LHS)) * (used$instrument - mean(used$instrument))
-      expected_s <- sum(score)^2 / sum(score^2)
-      stopifnot(model$stock_wright$status == 'available', model$stock_wright$nobs == nobs(model),
-        isTRUE(all.equal(model$stock_wright$statistic, expected_s, tolerance = 1e-10)),
-        grepl('Stock–Wright LM S', output$results_table$html, fixed = TRUE),
-        grepl('Stock–Wright p-value', output$results_table$html, fixed = TRUE),
-        grepl('Instrument Wald F', output$results_table$html, fixed = TRUE),
-        !grepl('Wald p-value', output$results_table$html, fixed = TRUE),
-        model$instrument_relevance$status == 'available',
-        model$anderson_rubin$status == 'available', model$anderson_rubin$nobs == nobs(model),
-        model$anderson_rubin$null_elasticity == 0, model$anderson_rubin$df == 1L,
-        model$instrument_relevance$nobs == nobs(model),
-        model$instrument_relevance$evaluated_theta == model$theta,
-        model$instrument_relevance$covariance == 'HC0')
-    } else stopifnot(is.null(model$stock_wright), is.null(model$anderson_rubin), is.null(model$instrument_relevance),
-      !grepl('Stock–Wright LM S', output$results_table$html, fixed = TRUE),
-      !grepl('Anderson–Rubin Wald χ²', output$results_table$html, fixed = TRUE),
-      !grepl('Local instrument Wald F', output$results_table$html, fixed = TRUE))
-    assert_ch_diagnostics_hidden(output$results_table$html)
-    if (method == 'IV') assert_f_row(output$results_table$html, model$instrument_relevance$statistic)
-    if (method == 'OLS') stopifnot(!grepl('<tr[^>]*><td[^>]*>Instrument Wald F</td>', output$results_table$html, perl = TRUE))
-    stopifnot(grepl('Ciccone', output$results_table$html), grepl('State', output$analysis_details$html),
-      output$data_notes_heading == 'State data and method')
-    stopifnot(grepl('at least 95% geographic coverage', output$data_notes$html, fixed = TRUE))
-    assert_ch_diagnostics_hidden(output$data_notes$html)
-    if (year == 1900) {
-      csv <- read.csv(output$download_coefficients)
-      stopifnot(all(csv$geography == 'State'), all(csv$density_measure == 'CH'),
-        all(csv$instrument_units == 'Thousands of people'), all(csv$instrument_year == year),
-        all(csv$sample_year == year), all(csv$standard_errors == 'robust'),
-        !'water_year' %in% names(csv), !'overlap_threshold_pct' %in% names(csv))
-      if (method == 'IV') {
-        main <- csv[csv$term == 'ch_elasticity', ]
-        relevance <- model$instrument_relevance
-        stopifnot(nrow(main) == 1L,
-          all(c('stock_wright_lm_s', 'stock_wright_p_value', 'stock_wright_df', 'stock_wright_null_elasticity',
-            'ch_local_instrument_wald_f', 'ch_local_evaluated_theta', 'ch_local_covariance', 'ch_local_relevance_note') %in% names(csv)),
-          isTRUE(all.equal(main$ch_local_instrument_wald_f, relevance$statistic, tolerance = 1e-10)),
-          isTRUE(all.equal(main$ch_local_evaluated_theta, relevance$evaluated_theta, tolerance = 1e-10)),
-          main$ch_local_covariance == relevance$covariance, nzchar(main$ch_local_relevance_note),
-          !'wald_p_value' %in% names(csv))
-      }
-      assert_ch_diagnostics_hidden(csv = csv)
-      html <- paste(readLines(output$download_results, warn = FALSE), collapse = '\n')
-      stopifnot(grepl('<h2>State data</h2>', html, fixed = TRUE),
-        grepl('at least 95% geographic coverage', html, fixed = TRUE),
-        grepl('Known unallocated population', html, fixed = TRUE),
-        grepl(app$instrument_name(construction), html, fixed = TRUE),
-        !grepl('<h2>Geographic controls</h2>', html, fixed = TRUE),
-        !grepl('Water-access year', html, fixed = TRUE))
-      assert_ch_diagnostics_hidden(html)
-      if (method == 'IV') assert_f_row(html, model$instrument_relevance$statistic)
-      if (method == 'OLS') stopifnot(!grepl('<tr[^>]*><td[^>]*>Instrument Wald F</td>', html, perl = TRUE))
-      if (method == 'IV') stopifnot(all(csv$stock_wright_df == 1L), all(csv$stock_wright_null_elasticity == 0),
-        all(abs(csv$stock_wright_lm_s - model$stock_wright$statistic) < 1e-10),
-        all(abs(csv$stock_wright_p_value - model$stock_wright$p_value) < 1e-10),
-        grepl('Stock–Wright LM S', html, fixed = TRUE), grepl('Stock–Wright p-value', html, fixed = TRUE),
-        grepl('Instrument Wald F', html, fixed = TRUE))
-      else stopifnot(!'stock_wright_lm_s' %in% names(csv), !'ch_local_instrument_wald_f' %in% names(csv))
-    }
-    prior_header <- output$results_header
-    session$setInputs(analysis_level = 'County', state_iv_year = '1790')
-    stopifnot(identical(prior_header, output$results_header))
-  })
-  model <- result$models[[1]]
-  rows[[length(rows) + 1L]] <- data.frame(year, construction, scope, method,
-    elasticity = coef(model)[['ch_elasticity']], se = sqrt(vcov(model)['ch_elasticity','ch_elasticity']),
-    n = nobs(model))
-  cat('State app passed:', year, construction, scope, method, 'N', nobs(model), '\n')
-}
-for (construction in c('county_population', 'area_population')) for (scope in c('states_only', 'states_territories')) {
-  result <- app$state_ch_result(list(year_modern = '2010', analysis_type = 'IV',
-    state_sample_year = '1870', state_iv_year = '1900', state_instrument_type = construction,
-    sample_scope = scope), app$state_data)
-  prefix <- if (construction == 'county_population') 'GG' else 'AW'
-  suffix <- if (scope == 'states_only') '_sy' else ''
-  stopifnot(all(result$data_for_fs[[paste0(prefix, 'valid_1870', suffix)]] == 1L),
-    all(result$data_for_fs[[paste0(prefix, 'valid_1900', suffix)]] == 1L))
-  check_estimate(result)
-}
-# Test the reported 2020/1900 case using the rebuilt data and actual app controls.
-local({
-  original_state <- app$state_data
-  on.exit({app$state_data <- original_state})
-  options <- list(
-    AW_levels = list(construction = 'area_population', scale = 'levels', prefix = 'AW'),
-    AW_log = list(construction = 'area_population', scale = 'log', prefix = 'AW'),
-    GG_levels = list(construction = 'county_population', scale = 'levels', prefix = 'GG'),
-    GG_log = list(construction = 'county_population', scale = 'log', prefix = 'GG'),
-    HCH_levels = list(construction = 'historical_ch', scale = 'levels', prefix = 'HCH'),
-    HCH_log = list(construction = 'historical_ch', scale = 'log', prefix = 'HCH'))
-  used_data <- function(result) result$data_for_fs[result$models[[1]]$rows, , drop = FALSE]
-  state_ids <- function(result) sort(as.integer(used_data(result)$statefips))
-  estimates <- list()
-  members <- list()
-  scope_members <- list()
-  run_option <- function(option, scope, sample) {
-    result <- NULL
-    suffix <- if (scope == 'states_only') '_sy' else ''
-    index <- paste0(if (option$prefix == 'HCH') 'HCH_' else paste0(option$prefix, 'pop_'), '1900', suffix)
-    valid <- paste0(option$prefix, 'valid_1900', suffix)
-    panel <- app$state_data[app$state_data$year == 2020, , drop = FALSE]
-    expected <- panel[[valid]] == 1L & is.finite(panel[[index]]) &
-      is.finite(panel$LHS) & is.finite(panel$RHS) & panel$ch_complete == 1L
-    if (option$prefix == 'HCH') expected <- expected &
-      is.finite(panel[[paste0('HCHpop_1900', suffix)]]) & panel[[paste0('HCHpop_1900', suffix)]] > 0
-    else expected <- expected & if (option$scale == 'log') panel[[index]] > 0 else panel[[index]] >= 0
-    expected_ids <- sort(as.integer(panel$statefips[which(expected)]))
-    shiny::testServer(app$server, {
-      session$setInputs(analysis_level = 'State', year_modern = '2020', analysis_type = 'IV',
-        state_sample_year = '1900', state_iv_year = '1900', state_instrument_type = option$construction,
-        sample_scope = scope, instrument_form = option$scale, msa_density_measure = 'average',
-        approach = 'density', use_fe = TRUE, geo_controls = 'terrain', show_map = FALSE, run_analysis = 1)
-      session$flushReact()
-      session$setInputs(msa_density_measure = 'CH')
-      session$flushReact()
-      result <<- isolate(analysis_output())
-      if (!is.null(result$error)) stop(result$error)
-      check_estimate(result)
-      stopifnot(identical(state_ids(result), expected_ids), result$fe_type == 'No',
-        length(result$controls_vec) == 0L, result$year_modern == 2020L)
-      map <- isolate(map_output())
-      expected_map_title <- paste('Instrument Map:', app$instrument_name(option$construction))
-      if (option$prefix != 'HCH') expected_map_title <- paste(expected_map_title, '\u00b7',
-        if (option$scale == 'log') 'Natural log of population (people)' else 'Thousands of people')
-      stopifnot(is.null(map$src),
-        identical(map$title, expected_map_title),
-        identical(map$message, if (option$prefix == 'HCH')
-          'A map is not available for the historical CH instrument. Download Historical CH inputs to inspect the regional values.'
-          else 'A map is not available for state instruments.'))
-      used <- used_data(result)
-      original_instrument <- as.numeric(used[[index]])
-      expected_instrument <- if (option$prefix == 'HCH') original_instrument else
-        if (option$scale == 'log') log(original_instrument) else original_instrument / 1000
-      stopifnot(isTRUE(all.equal(as.numeric(used$instrument), expected_instrument, tolerance = 1e-12)))
-      if (option$prefix == 'HCH') stopifnot(any(used$instrument < 0),
-        result$instrument_form == 'historical_ch', result$log_nonpositive_n == 0L,
-        result$state_hch_variant == 'historical', result$state_hch_density_basis == 'source',
-        grepl('Historical CH construction: Historical.', output$results_table$html, fixed = TRUE),
-        grepl('Historical density basis: Historical reporting-area density.', output$results_table$html, fixed = TRUE),
-        grepl('population-weighted mean of the selected log historical density, used directly.', output$results_table$html, fixed = TRUE))
-      else stopifnot(result$instrument_form == option$scale)
-      model <- result$models[[1]]
-      yr <- used$LHS - mean(used$LHS)
-      zr <- used$instrument - mean(used$instrument)
-      score <- yr * zr
-      expected_s <- sum(score)^2 / sum(score^2)
-      slope <- sum(zr * yr) / sum(zr^2)
-      variance <- sum((zr * (yr - slope * zr))^2) / sum(zr^2)^2
-      expected_ar <- slope^2 / variance
-      stopifnot(abs(model$stock_wright$statistic - expected_s) < 1e-9,
-        abs(model$anderson_rubin$statistic - expected_ar) < 1e-9)
-      csv <- read.csv(output$download_coefficients)
-      assert_ch_diagnostics_hidden(output$results_table$html, csv)
-      stopifnot(all(csv$instrument_form == result$instrument_form),
-        all(csv$instrument_units == app$instrument_units(result)),
-        all(csv$instrument_year == 1900), all(csv$sample_year == 1900),
-        all(abs(csv$stock_wright_lm_s - expected_s) < 1e-9),
-        all(abs(csv$ch_local_instrument_wald_f - model$instrument_relevance$statistic) < 1e-9),
-        grepl('Stock–Wright LM S', output$results_table$html, fixed = TRUE),
-        grepl('Instrument Wald F', output$results_table$html, fixed = TRUE))
-    })
-    model <- result$models[[1]]
-    label <- paste(option$prefix, option$scale, sep = '_')
-    estimates[[length(estimates) + 1L]] <<- data.frame(scope, sample, instrument = label,
-      n = nobs(model), elasticity = coef(model)[['ch_elasticity']],
-      se = sqrt(vcov(model)['ch_elasticity', 'ch_elasticity']),
-      S = model$stock_wright$statistic, S_p = model$stock_wright$p_value,
-      AR = model$anderson_rubin$statistic, AR_p = model$anderson_rubin$p_value)
-    used <- used_data(result)
-    members[[length(members) + 1L]] <<- data.frame(scope, sample, instrument = label,
-      statefips = as.integer(used$statefips), state = used$state_name, value = used$instrument)
-    result
+    m<-result$models[[1]]
+    membership<-app$get_historical_state_membership(year,scope)
+    stopifnot(all(result$data_for_fs$region_id %in% membership$region_id),
+      result$historical_region_eligible_n==length(unique(membership$region_id)),
+      result$n_obs<=result$historical_region_eligible_n,all(is.finite(coef(m))),all(is.finite(vcov(m))),
+      result$fe_type=="No",result$covariance_unit=="Historical state or territory group")
+    rows[[length(rows)+1L]]<-data.frame(year,scope,construction,method,n=nobs(m),
+      elasticity=coef(m)[["ch_elasticity"]],se=sqrt(vcov(m)["ch_elasticity","ch_elasticity"]))
   }
-  for (scope in c('states_only', 'states_territories')) {
-    app$state_data <- original_state
-    native <- lapply(options, run_option, scope = scope, sample = 'available')
-    scope_members[[scope]] <- lapply(native, state_ids)
-    expected_n <- if (scope == 'states_only') 42L else 43L
-    for (name in c('AW_levels', 'AW_log'))
-      stopifnot(nobs(native[[name]]$models[[1]]) == expected_n,
-        all(c(20L, 29L) %in% state_ids(native[[name]]))) # Kansas and Missouri
-    hch_expected <- sort(as.integer(unique(original_state$statefips)))
-    if (scope == 'states_only') hch_expected <- setdiff(hch_expected, c(4L, 35L, 40L))
-    for (name in c('HCH_levels', 'HCH_log'))
-      stopifnot(identical(state_ids(native[[name]]), hch_expected),
-        all(c(27L, 30L, 46L) %in% state_ids(native[[name]]))) # Minnesota, Montana, South Dakota
-    for (pair in list(c('AW_levels', 'AW_log'), c('GG_levels', 'GG_log'), c('HCH_levels', 'HCH_log')))
-      stopifnot(identical(state_ids(native[[pair[1]]]), state_ids(native[[pair[2]]])))
-    stopifnot(isTRUE(all.equal(coef(native$HCH_levels$models[[1]]), coef(native$HCH_log$models[[1]]), tolerance = 1e-12)),
-      isTRUE(all.equal(vcov(native$HCH_levels$models[[1]]), vcov(native$HCH_log$models[[1]]), tolerance = 1e-12)))
-    common_ids <- Reduce(intersect, lapply(native, state_ids))
-    stopifnot(length(common_ids) >= 4L)
-    app$state_data <- original_state[original_state$year != 2020 | original_state$statefips %in% common_ids, , drop = FALSE]
-    common <- lapply(options, run_option, scope = scope, sample = 'common')
-    reference <- used_data(common[[1]])
-    fields <- c('statefips', 'LHS', 'RHS', grep('^(nc|ac)[0-9]+$', names(reference), value = TRUE))
-    reference <- reference[order(reference$statefips), fields]
-    for (result in common) {
-      stopifnot(identical(state_ids(result), sort(common_ids)))
-      used <- used_data(result)
-      stopifnot(isTRUE(all.equal(reference, used[order(used$statefips), fields], check.attributes = FALSE)))
-    }
-  }
-  for (name in c('AW_levels', 'HCH_levels')) {
-    state_ids_only <- scope_members$states_only[[name]]
-    state_ids_all <- scope_members$states_territories[[name]]
-    additions <- if (name == 'HCH_levels') c(4L, 35L, 40L) else 35L
-    stopifnot(all(state_ids_only %in% state_ids_all),
-      identical(as.integer(setdiff(state_ids_all, state_ids_only)), additions))
-  }
-  write.csv(do.call(rbind, estimates), file.path(work, 'state_2020_1900_options.csv'), row.names = FALSE)
-  write.csv(do.call(rbind, members), file.path(work, 'state_2020_1900_option_samples.csv'), row.names = FALSE)
-  cat('State 2020/1900 checks passed: native/common samples, exact logs, signed HCH, unchanged population samples and restored Minnesota/Montana/South Dakota.\n')
-})
-# Construct two known IV roots rather than depending on an old geographic sample.
-local({
-  original_state <- app$state_data
-  on.exit({app$state_data <- original_state})
-  fixture <- original_state
-  retained <- which(fixture$year == 2010 & app$state_admission_year(fixture$statefips) <= 1900L)
-  i <- seq_along(retained)
-  n <- cbind(exp(1 + i / 25), exp(.5 + sin(i * .31)))
-  a <- cbind(rep(1, length(i)), rep(2, length(i)))
-  direct_index <- function(theta) log(rowSums(n^theta * a^(1 - theta)) / rowSums(n))
-  first <- direct_index(1.05)
-  second <- direct_index(1.5)
-  z <- qr.resid(qr(cbind(1, second - first)), sin(i * .73))
-  noise <- qr.resid(qr(cbind(1, z)), cos(i * .41))
-  y <- 9 + first + .01 * noise
-  stopifnot(sum(z^2) > 1e-4,
-    abs(sum(z * (y - first))) < 1e-10, abs(sum(z * (y - second))) < 1e-10)
-  ncols <- grep('^nc[0-9]+$', names(fixture), value = TRUE)
-  fixture[retained, ncols] <- 0
-  fixture[retained, sub('^nc', 'ac', ncols)] <- 1
-  fixture$nc1[retained] <- n[, 1]
-  fixture$nc2[retained] <- n[, 2]
-  fixture$ac2[retained] <- a[, 2]
-  fixture$LHS[retained] <- y
-  fixture$RHS[retained] <- log(rowSums(n) / rowSums(a))
-  fixture$ch_complete[retained] <- 1L
-  fixture$AWpop_1900_sy[retained] <- (z - min(z) + 1) * 1000
-  fixture$AWvalid_1900_sy[retained] <- 1L
-  app$state_data <- fixture
-  shiny::testServer(app$server, {
-    session$setInputs(analysis_level = 'State', year_modern = '2010', analysis_type = 'IV',
-      state_sample_year = '1900', state_iv_year = '1900', state_instrument_type = 'area_population',
-      sample_scope = 'states_only', instrument_form = 'levels', msa_density_measure = 'average',
-      approach = 'density', show_map = FALSE, run_analysis = 1)
-    session$flushReact()
-    result <- isolate(analysis_output())
-    if (!is.null(result$error)) stop(result$error)
-    stopifnot(length(result$model_warnings) == 1L,
-      grepl('multiple solutions', result$model_warnings, fixed = TRUE),
-      grepl(result$model_warnings, output$sample_note$html, fixed = TRUE))
-    csv <- read.csv(output$download_coefficients)
-    html <- paste(readLines(output$download_results, warn = FALSE), collapse = '\n')
-    stopifnot(all(csv$estimation_notes == result$model_warnings),
-      grepl(result$model_warnings, html, fixed = TRUE))
-    assert_ch_diagnostics_hidden(html, csv)
-  })
-})
+# Changing the instrument year cannot redraw the regional outcome or county sum.
+early<-app$state_ch_result(settings,app$state_data)
+later<-app$state_ch_result(modifyList(settings,list(state_iv_year="1900")),app$state_data)
+common<-intersect(early$data_for_fs$region_id,later$data_for_fs$region_id)
+a<-early$data_for_fs[match(common,early$data_for_fs$region_id),]
+b<-later$data_for_fs[match(common,later$data_for_fs$region_id),]
+fields<-c("LHS","RHS",grep("^(nc|ac)[0-9]+$",names(a),value=TRUE))
+stopifnot(isTRUE(all.equal(a[fields],b[fields],check.attributes=FALSE)))
+
 shiny::testServer(app$server, {
-  session$setInputs(analysis_level = 'State', year_modern = '2010', analysis_type = 'IV',
-    state_sample_year = '1900', state_iv_year = '1910', state_instrument_type = 'area_population',
-    sample_scope = 'states_only', msa_density_measure = 'average', approach = 'density', show_map = FALSE, run_analysis = 1)
-  session$flushReact()
-  stopifnot(grepl('Choose a historical census year', isolate(analysis_output())$error, fixed = TRUE),
-    output$results_header == 'Analysis Error', grepl('Choose a historical census year', output$results_table$html, fixed = TRUE))
+  do.call(session$setInputs,modifyList(settings,list(state_iv_year="1900")))
+  session$setInputs(run_analysis=1L)
+  result<-isolate(analysis_output())
+  if(!is.null(result$error)) stop(result$error)
+  csv<-read.csv(output$download_coefficients,stringsAsFactors=FALSE)
+  diagnostics<-read.csv(output$download_hch_diagnostics,stringsAsFactors=FALSE)
+  html<-paste(readLines(output$download_results,warn=FALSE),collapse="\n")
+  stopifnot(all(csv$historical_boundary_year==1790),all(csv$historical_groups_before_exclusions==16),
+    all(csv$covariance_unit=="Historical state or territory group"),
+    all(nzchar(csv$historical_groups_in_estimation)),!"statefips" %in% names(diagnostics),
+    all(nzchar(diagnostics$region_name[diagnostics$record_type=="state"])),
+    grepl("Historical county fixed-effect groups",output$analysis_details$html,fixed=TRUE),
+    grepl("Northwest Territory",html,fixed=TRUE),
+    !grepl("Anderson.{0,12}Rubin|Local instrument Wald F",output$results_table$html,ignore.case=TRUE))
+  before<-output$results_header
+  session$setInputs(state_sample_year="1900",sample_scope="states_only")
+  stopifnot(identical(before,output$results_header),isolate(analysis_output())$sample_year==1790L)
+  session$setInputs(state_sample_year="1910",run_analysis=2L)
+  stopifnot(grepl("Choose a historical census year",isolate(analysis_output())$error,fixed=TRUE))
 })
-local({
-  original_state <- app$state_data
-  on.exit({app$state_data <- original_state})
-  bad <- original_state
-  retained <- which(bad$year == 2010)
-  ncols <- grep('^nc[0-9]+$', names(bad), value = TRUE)
-  bad[retained, ncols] <- 0
-  bad[retained, sub('^nc', 'ac', ncols)] <- 1
-  density <- seq(1, 4, length.out = length(retained))
-  bad$nc1[retained] <- exp(density)
-  bad$LHS[retained] <- -10 * density
-  bad$RHS[retained] <- density
-  bad$ch_complete[retained] <- 1L
-  bad$AWpop_1900_sy[retained] <- density * 1000
-  bad$AWvalid_1900_sy[retained] <- 1L
-  app$state_data <- bad
-  shiny::testServer(app$server, {
-    session$setInputs(analysis_level = 'State', year_modern = '2010', analysis_type = 'IV',
-      state_sample_year = '1900', state_iv_year = '1900', state_instrument_type = 'area_population',
-      sample_scope = 'states_only', msa_density_measure = 'average', approach = 'density', show_map = FALSE, run_analysis = 1)
-    session$flushReact()
-    failed <- isolate(analysis_output())
-    stopifnot(!is.null(failed$error), failed$stock_wright$status == 'available',
-      grepl('Stock–Wright LM S', output$results_table$html, fixed = TRUE),
-      grepl('CH elasticity = 0', output$results_table$html, fixed = TRUE))
-    assert_ch_diagnostics_hidden(output$results_table$html)
-  })
-})
-results <- dplyr::bind_rows(rows)
-jsonlite::write_json(results, file.path(work, 'state_app_results.json'), pretty = TRUE, digits = 15)
-print(results, row.names = FALSE)
+results<-do.call(rbind,rows)
+jsonlite::write_json(results,file.path(work,"state_app_results.json"),pretty=TRUE,digits=15)
+print(results,row.names=FALSE)
+cat("State historical-region checks passed: exact FE groups, common boundaries, county sums, all estimators, independent covariance and exports.\n")

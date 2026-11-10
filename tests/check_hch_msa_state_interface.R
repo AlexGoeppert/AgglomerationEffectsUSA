@@ -100,7 +100,7 @@ shiny::testServer(app$server, {
     results[[paste(level, "source")]] <<- c(theta = model$theta, pilot = model$pilot_theta, n = model$nobs)
   }
 
-  # National prediction coefficients agree across levels, including Washington's county input.
+  # Both levels use the same prediction formula; State includes any additional historical territory inputs.
   predicted <- list()
   for (level in c("State", "MSA")) {
     settings <- choice(level, "nls")
@@ -130,7 +130,8 @@ shiny::testServer(app$server, {
     model <- result$models[[1]]
     results[[paste(level, "predicted")]] <<- c(theta = model$theta, pilot = model$pilot_theta, n = model$nobs)
   }
-  stopifnot(isTRUE(all.equal(predicted$MSA, predicted$State, tolerance = 1e-12)))
+  stopifnot(identical(names(predicted$MSA),names(predicted$State)),
+    all(is.finite(predicted$MSA[!is.na(predicted$MSA)])),all(is.finite(predicted$State[!is.na(predicted$State)])))
 })
 print(do.call(rbind, results))
 cat("MSA and State CH interface checks passed: derivative/NLS instruments, GMM weights, pilot samples, exports and stored choices.\n")

@@ -83,9 +83,13 @@ standard <- modifyList(settings,list(state_ch_mode="standard"))
 before <- app$state_ch_result(standard,app$state_data)$models[[1]]
 baseline <- app$state_ch_result(settings,app$state_data)
 check(baseline)
-stopifnot(abs(coef(baseline$models[[1]])[["ch_elasticity"]]-.2675751)<1e-5,
-  abs(sqrt(vcov(baseline$models[[1]])[1,1])-.08590708)<1e-5,
-  baseline$models[[1]]$county_calibration$nobs==2752L)
+baseline_prepared <- app$prepare_county_geography(settings,baseline$data_for_fs)
+check_county_iv_identity(baseline_prepared,baseline$models[[1]],"Historical State geography")
+calibrated <- match(baseline$models[[1]]$county_calibration$county_ids,
+  as.character(baseline_prepared$county$county_id))
+stopifnot(all(baseline_prepared$county$region_id[calibrated] %in% baseline$models[[1]]$region_ids),
+  identical(as.character(baseline_prepared$county$joint_cluster[calibrated]),
+    as.character(baseline_prepared$county$region_id[calibrated])))
 for(method in c("IV","OLS")) check(app$state_ch_result(modifyList(settings,list(analysis_type=method,
   state_instrument_type="county_population",state_county_instrument="county_population")),app$state_data))
 check(app$state_ch_result(modifyList(settings,list(state_instrument_type="historical_ch")),app$state_data))
@@ -121,7 +125,7 @@ check(app$state_ch_result(modifyList(state_hc_input,list(analysis_type="OLS")),a
 state_hc_states <- app$state_ch_result(modifyList(state_hc_input,list(sample_scope="states_only")),app$state_data)
 check(state_hc_states)
 stopifnot(state_hc_states$sample_scope=="states_only",
-  all(state_hc_states$models[[1]]$state_ids %in% as.character(state_hc_states$data_for_fs$state_id)))
+  all(state_hc_states$models[[1]]$state_ids %in% as.character(state_hc_states$data_for_fs$region_id)))
 check(app$state_ch_result(modifyList(state_hc_input,list(state_instrument_type="historical_ch")),app$state_data))
 state_hc_hidden <- modifyList(state_hc_input,list(state_county_area=TRUE,
   state_county_instrument="unused",state_geo_controls="unused",state_water_controls="unused",
@@ -135,7 +139,7 @@ stopifnot(identical(coef(state_hc$models[[1]]),coef(state_hc_unchanged$models[[1
 # panel and works when the static input omits every geography field.
 original_year_loader <- app$get_app_year
 original_hc_static <- app$get_state_adjustment_inputs
-hc_static <- as.data.frame(original_hc_static())
+hc_static <- as.data.frame(original_hc_static("State_historical_adjustment_counties.dta"))
 hc_static <- hc_static[c("geofips","statefips","ch_slot","ac","simple_gamma","avg_schooling_10_14","college_share")]
 app$get_app_year <- function(...) stop("County calibration data must not be loaded.")
 app$get_state_adjustment_inputs <- function(...) hc_static
@@ -146,7 +150,7 @@ stopifnot(nrow(hc_prepared$county)==0L,!length(hc_prepared$geo_vars),
 app$get_app_year <- original_year_loader
 app$get_state_adjustment_inputs <- original_hc_static
 original_static <- app$get_state_adjustment_inputs
-static <- as.data.frame(original_static())
+static <- as.data.frame(original_static("State_historical_adjustment_counties.dta"))
 static$avg_schooling_10_14 <- static$college_share <- NA_real_
 app$get_state_adjustment_inputs <- function(...) static
 no_hc <- app$state_ch_result(settings,app$state_data)
@@ -154,9 +158,11 @@ stopifnot(identical(baseline$models[[1]]$coefficients,no_hc$models[[1]]$coeffici
 missing_hc <- tryCatch(app$state_ch_result(modifyList(settings,list(state_adjustment_mode="both")),app$state_data),error=identity)
 stopifnot(inherits(missing_hc,"error"))
 selected <- baseline$models[[1]]$state_ids[1]
-static$rugged_mean[which(static$statefips==as.numeric(selected))[1]] <- NA_real_
+membership <- app$get_historical_state_membership(settings$state_sample_year,settings$sample_scope)
+selected_counties <- membership$geofips[membership$region_id==selected]
+static$rugged_mean[which(static$geofips %in% selected_counties)[1]] <- NA_real_
 missing <- app$state_ch_result(settings,app$state_data)
-stopifnot(nobs(missing$models[[1]])==nobs(baseline$models[[1]])-1,!selected %in% missing$models[[1]]$county_calibration$states)
+stopifnot(nobs(missing$models[[1]])==nobs(baseline$models[[1]])-1,!selected %in% missing$models[[1]]$region_ids)
 app$get_state_adjustment_inputs <- original_static
 ui <- htmltools::renderTags(app$ui)$html
 ui_conditions <- gsub("&#39;","'",ui,fixed=TRUE)

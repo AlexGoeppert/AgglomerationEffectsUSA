@@ -1,12 +1,17 @@
 # Keep the source panels in GitHub and deploy the verified annual data files.
 files <- rsconnect::listDeploymentFiles(".")
 annual_files <- list.files("app-data", recursive = TRUE, full.names = TRUE)
-source_panels <- c("MSA_analysis_data.dta", "master_county_build.dta", "State_CH_analysis_data.dta")
+source_panels <- c("MSA_analysis_data.dta", "master_county_build.dta", "State_CH_analysis_data.dta",
+  "State_historical_analysis_data.dta")
 if (!length(annual_files) || !all(annual_files %in% files))
   stop("The deployment bundle is missing prepared app data.")
 if (any(source_panels %in% files))
   stop("The deployment bundle should use annual data files instead of full panels.")
-if (!all(c("app.R", "renv.lock", "pdf_help.R", "state_ch_adjustments.R", "state_ch_adjustment_interface.R", "hch_prediction.R", "State_HCH_county_moments.dta", "Historical_CH_source_pieces.dta", "State_CH_adjustment_counties_data.dta", "MSA_CH_county_membership.dta", "MSA_CH_county_cluster_membership.dta") %in% files))
+if (!all(c("app.R", "renv.lock", "pdf_help.R", "state_ch_adjustments.R", "state_ch_adjustment_interface.R", "hch_prediction.R",
+  "historical_state_regions.R", "State_historical_membership.dta", "State_historical_county_components.dta",
+  "State_historical_instruments.dta", "State_historical_county_moments.dta", "State_historical_source_pieces.dta",
+  "State_historical_adjustment_counties.dta", "State_HCH_county_moments.dta", "Historical_CH_source_pieces.dta",
+  "State_CH_adjustment_counties_data.dta", "MSA_CH_county_membership.dta", "MSA_CH_county_cluster_membership.dta") %in% files))
   stop("The deployment bundle is missing the app or its dependency lockfile.")
 help <- new.env(parent = baseenv())
 sys.source("pdf_help.R", envir = help)

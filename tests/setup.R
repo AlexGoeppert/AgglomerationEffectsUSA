@@ -35,7 +35,8 @@ app$get_app_year <- function(level, year) {
   data <- app[[if (level == "MSA") "msa_data" else "county_data"]]
   data[!is.na(data$year) & data$year == as.integer(year), , drop = FALSE]
 }
-stopifnot(nrow(app$state_data) == 48L * 22L, !anyDuplicated(app$state_data[c("statefips", "year")]))
+stopifnot(identical(sort(unique(as.integer(app$state_data$year))),2001:2022),
+  !anyDuplicated(app$state_data[c("sample_year","scope","region_id","year")]))
 original <- list(MSA = app$msa_data, County = app$county_data)
 
 # Keep the affected geographic identities available when a model check stops.

@@ -3,18 +3,19 @@ check_hch_coverage_options <- function(app) {
     state_ch_mode = "standard", state_sample_year = "1790", state_iv_year = "1790",
     state_instrument_type = "historical_ch", sample_scope = "states_only", instrument_form = "levels",
     show_map = FALSE, use_fe = FALSE)
-  panel <- app$state_data[app$state_data$year == 2010, , drop = FALSE]
   expected_ids <- function(choice, scope) {
-    suffix <- if (scope == "states_only") "_sy" else ""
+    panel <- app$state_data[app$state_data$year==2010 & app$state_data$sample_year==1790 &
+      app$state_data$scope==app$historical_region_scope(scope),,drop=FALSE]
+    panel <- app$attach_historical_region_instruments(panel,1790,scope,1790)
+    suffix <- ""
     population <- panel[[paste0("HCHobs_1790", suffix)]]
     numerator <- panel[[paste0("HCHnumer_1790", suffix)]]
     coverage <- panel[[paste0("HCHcover_1790", suffix)]]
     minimum <- switch(choice, `80` = .80, `95` = .95, none = 0)
     keep <- is.finite(population) & population > 0 & is.finite(numerator) &
       is.finite(numerator / population) & is.finite(coverage) & coverage >= minimum &
-      is.finite(panel$LHS) & is.finite(panel$RHS)
-    if (scope == "states_only") keep <- keep & app$state_admission_year(panel$statefips) <= 1790L
-    sort(as.integer(panel$statefips[keep]))
+      is.finite(panel$LHS) & is.finite(panel$RHS) & panel$ch_complete==1L
+    sort(as.character(panel$region_id[keep]))
   }
   shiny::testServer(app$server, {
     do.call(session$setInputs, settings)
@@ -28,7 +29,7 @@ check_hch_coverage_options <- function(app) {
       session$flushReact()
       result <- isolate(analysis_output())
       if (!is.null(result$error)) stop(result$error)
-      stopifnot(identical(sort(as.integer(result$data_for_fs$statefips)), expected_ids(choice, scope)),
+      stopifnot(identical(sort(as.character(result$data_for_fs$region_id)), expected_ids(choice, scope)),
         identical(result$state_hch_coverage, choice),
         identical(result$hch_coverage_required, switch(choice, `80` = .80, `95` = .95, none = 0)))
       label <- switch(choice, `80` = "80%", `95` = "95%", none = "No coverage filter")
@@ -53,7 +54,7 @@ check_hch_coverage_options <- function(app) {
       state_ch_mode = "county_adjusted", state_adjustment_mode = mode, state_hch_coverage = "none",
       state_geo_controls = "terrain", state_water_controls = character(),
       state_transport_controls = character(), state_water_year = "1820")), app$state_data)
-    stopifnot(identical(sort(as.integer(adjusted$data_for_fs$statefips)), expected_ids("none", "states_only")),
+    stopifnot(identical(sort(as.character(adjusted$data_for_fs$region_id)), expected_ids("none", "states_only")),
       adjusted$state_hch_coverage == "none", adjusted$hch_coverage_required == 0,
       all(adjusted$models[[1]]$region_ids %in% as.character(expected_ids("none", "states_only"))))
   }

@@ -37,8 +37,8 @@ read_app_data <- function(path, level) {
 
 app_data_spec <- function() {
   years <- 2001:2022
-  list(version = 2L, years = years, levels = c("MSA", "County"),
-    sources = c(MSA = "MSA_analysis_data.dta", County = "master_county_build.dta", State = "State_CH_analysis_data.dta"),
+  list(version = 3L, years = years, levels = c("MSA", "County"),
+    sources = c(MSA = "MSA_analysis_data.dta", County = "master_county_build.dta", State = "State_historical_analysis_data.dta"),
     files = c(paste0("MSA-", years, ".rds"), paste0("County-", years, ".rds"), "state.rds"))
 }
 
@@ -97,7 +97,9 @@ make_app_data_loader <- function(cache_dir = "app-data", source_dir = ".") {
   }
   get_state <- function() {
     data <- if (is.null(manifest)) haven::read_dta(file.path(source_dir, spec$sources[["State"]])) else read_cached("state.rds", "State")
-    if (!identical(sort(unique(as.integer(data$year))), spec$years) || anyNA(data$year))
+    if (!identical(sort(unique(as.integer(data$year))), spec$years) || anyNA(data$year) ||
+        !all(c("sample_year", "scope", "region_id", "region_name") %in% names(data)) ||
+        anyDuplicated(data[c("sample_year", "scope", "year", "region_id")]))
       stop("The state dataset must contain all modern years from 2001 to 2022.")
     data
   }
@@ -143,7 +145,7 @@ help_instrument_form <- paste("Levels uses historical population in thousands of
   "The historical CH density index is already a weighted average of log densities and is used directly.")
 help_state_instrument <- paste("Glaeser and Gottlieb (2009) sums full historical county populations matched to current county identities within each state.",
   "Area-weighted population allocates each historical reporting area's population by its geographic overlap with modern counties, then sums within states.",
-  "Historical CH density index averages log historical reporting-area population density using allocated population shares as weights. Population and area are split across modern states by geographic overlap, using the same allocation as area-weighted population and preserving source density. Jointly reported counties are treated as one reporting area. Unknown populations are omitted from the average. Historical CH coverage selects an 80% or 95% minimum share of area with known population and usable geometry, or No coverage filter. The same selection applies in both historical years. Recorded zero populations count toward coverage and receive zero weight. All choices require positive observed population and a finite index; missing and unmapped records remain flagged.",
+  "Historical CH density index averages log historical reporting-area population density using allocated population shares as weights. Population and area are allocated to modern county units by geographic overlap, then summed within the selected historical groups, preserving source density. Jointly reported counties are treated as one reporting area. Unknown populations are omitted from the average. Historical CH coverage selects an 80% or 95% minimum share of area with known population and usable geometry, or No coverage filter. The same selection applies in both historical years. Recorded zero populations count toward coverage and receive zero weight. All choices require positive observed population and a finite index; missing and unmapped records remain flagged.",
   "The Historical option uses historical data. Prediction options use a county regression of modern employment density on historical density and selected geography, then replace the density term, population weights, or both. All instruments require relevance and an appropriate exclusion assumption.")
 help_hch_prediction <- "Choose the historical index or replace county density, population weights, or both using the county prediction. The one-page explanation gives the equation, sample and coverage rule."
 help_stock_wright <- paste("Stock–Wright LM S tests whether the CH elasticity is zero (theta = 1).",
@@ -156,11 +158,11 @@ help_ch_instrument_wald <- paste("For CH GMM, Instrument Wald F describes instru
   "It treats the fitted derivative as fixed. This is a local relevance diagnostic; usual linear-IV F cutoffs do not establish strong identification for the nonlinear CH model.")
 
 # Master settings
-help_analysis_level      <- "Pick metropolitan statistical areas (MSAs), counties, or states. State estimates use the Ciccone–Hall model and the 48 contiguous states."
+help_analysis_level      <- "Pick metropolitan statistical areas (MSAs), counties, or states. State estimates use the Ciccone–Hall model with the historical state and territory groups recorded in the county data."
 help_state_ch <- paste("Ciccone and Hall (1996) relate state productivity to employment density within the state’s counties.",
   "The model estimates theta in log[sum(n^theta a^(1−theta))/sum(n)], where n is county employment and a is county land area. The table reports theta − 1.",
-  "The outcome is log state GDP per employment for all industries. BEA combined county units are kept together. Standard CH uses robust standard errors and no schooling adjustment or state fixed effects.",
-  "There is one observation per modern state in the selected year. A separate fixed effect for each modern state would absorb all variation, so the density effect could not be estimated. Historical state/territory group effects need not absorb all variation, but are not implemented in this State specification. County and MSA analyses can use state fixed effects because they have multiple geographic units within states.",
+  "The outcome is log regional GDP per employment for all industries. BEA combined county units are kept together. Standard CH uses robust standard errors across historical groups. County-adjusted CH combines county and regional score contributions within the same historical group.",
+  "There is one observation per historical fixed-effect group in the selected boundary year. GDP, employment and county contributions are aggregated over the same county membership for every State estimator. A separate fixed effect for each historical group would absorb all variation. Modern state fixed effects remain in the linked county geography regression.",
   "County-adjusted CH is available for states and MSAs. The Geography tab estimates geography and transport effects from a linked county regression. Geography + human capital also puts schooling and college share inside county contributions and reestimates geography. This option uses joint county-aggregate inference. Separate MSA outcome adjustments remain available in the Geography tab; the combined tab uses the unadjusted aggregate outcome. All state specifications use all industries and no mining filter. County and MSA choices are retained separately.",
   "County matching sums historical populations assigned to current counties in each state. A known total reported jointly for several counties can be used when all belong to the same state. Area weighting allocates historical population by geographic overlap with current counties, assuming uniform density within each historical reporting area. The Levels option uses population in thousands; the Natural log option uses ln(population).",
   "Only states with valid historical population and complete county employment and land area enter the model. Area-weighted state population also requires at least 95% geographic coverage. Known unallocated population makes the affected state total unavailable. The historical year can therefore change the sample.",
@@ -181,23 +183,17 @@ help_analysis_type       <- paste(
   sep = "\n")
 
 # Fixed effects & scope
-help_use_fe              <- "State fixed effects account for factors shared by geographic units in the same state. Historical and modern effects remain available for County and MSA analyses, including MSA Ciccone–Hall. With one observation per modern state, separate modern-state effects would absorb all variation. Historical state/territory group effects are not implemented in the State specification."
+help_use_fe              <- "State fixed effects account for factors shared by geographic units in the same state. Historical and modern effects remain available for County and MSA analyses, including MSA Ciccone–Hall. State analyses have one observation per historical group, so a separate effect for every such group would absorb all variation. Modern state effects are retained in the linked county calibration."
 help_fe_type             <- "Modern uses modern state identities. Historical uses state and territory identities in the selected historical sample year, so changing only the instrument year leaves the fixed-effect definition unchanged."
-help_sample_scope        <- paste(
-  "Which modern places stay in the sample?",
-  " • Historical States Only – State analyses include only states admitted to the Union by the end of the selected historical sample year. Admissions during that calendar year count.",
-  " • Historical States & Territories – also includes historical U.S. territories.",
-  "State analyses classify historical source areas by admission through the end of each source census year. This includes California in 1850 and Idaho and Wyoming in 1890.",
-  "For County and MSA analyses, scope classifies historical source areas at their census date: for example, a modern West Virginia location may be covered by historical Virginia. State analyses additionally exclude West Virginia before its 1863 admission when Historical States Only is selected.",
-  "State observations retain modern borders. States & Territories counts modern state units with historical coverage, rather than historical states and territories as separate historical administrative units.",
-  "The historical sample year fixes the MSA/County sample classification and historical fixed effects. Instrument availability is checked separately in the instrument year, using the same source-scope choice.",
-  "In the states-only scope, the original overlap measures retain District of Columbia population, but exclude units assigned a District of Columbia historical state effect. County matching and area weighting exclude District of Columbia population.",
-  sep = "\n")
+help_sample_scope <- paste(
+  "Historical States Only uses the historical state groups recorded in the county dataset. Historical States & Territories also includes the dataset's territory groups.",
+  "For State analyses, these are the observations: modern county GDP, employment and land area are aggregated within each historical group. The historical sample year fixes group boundaries for every instrument and estimator. Changing only the instrument year does not change these boundaries.",
+  "County and MSA analyses retain their existing geographic units and historical source-scope definitions. Missing county inputs and historical coverage can reduce the final estimation sample.", sep = "\n")
 
 # Standardized settings (used for both MSA and County)
 help_sectors             <- paste("Select the sector used for modern output per job. The employment measure on the right-hand side always uses total employment.",
   "Missing or suppressed BEA components make the corresponding sector outcome unavailable; the app reports those exclusions. Private non-farm removes agriculture, forestry, fishing and related activities from both GDP and employment. Private non-farm/mining also removes mining from both.")
-help_sample_year         <- "For State analyses with Historical States Only, this year fixes which states had joined the Union by the end of that calendar year. For MSA and County analyses, it defines historical sample availability, state/territory classification and historical fixed effects. The selected instrument must also be available in its own census year."
+help_sample_year <- "For State analyses, this year selects the historical fixed-effect groups used to aggregate county GDP, employment, land area and all instruments. For MSA and County analyses, it defines historical sample availability and historical fixed effects. The instrument is checked separately in its own census year."
 help_iv_year             <- "Selects the historical census year used for the population or density instrument. The Approach and matching method determine how that population enters the regression."
 help_schooling_adj       <- paste(
   "Adjust productivity for schooling using Mincerian return to schooling:",
@@ -746,9 +742,9 @@ data_quality_notes <- function(details) {
 
 sample_exclusion_notes <- function(details) {
   notes <- character()
-  if (identical(details$analysis_level, "State") && isTRUE(details$statehood_excluded_n > 0L))
-    notes <- c(notes, paste(details$statehood_excluded_n,
-      "modern states excluded because they had not joined the Union by the end of", paste0(details$sample_year, ".")))
+  if (identical(details$analysis_level, "State") && length(details$historical_region_excluded_names))
+    notes <- c(notes, paste("Historical groups excluded by the selected data and instrument requirements:",
+      paste(details$historical_region_excluded_names, collapse = ", "), "."))
   if (isTRUE(details$log_nonpositive_n > 0L)) notes <- c(notes, paste(details$log_nonpositive_n,
     "observations excluded because the selected historical instrument is zero or negative and its natural log is undefined."))
   if (isTRUE(details$sector_missing_n > 0L)) notes <- c(notes, paste(details$sector_missing_n,
@@ -1322,6 +1318,7 @@ source("pdf_help.R", local = TRUE)
 source("state_ch_adjustments.R", local = TRUE)
 source("state_ch_adjustment_interface.R", local = TRUE)
 source("hch_prediction.R", local = TRUE)
+source("historical_state_regions.R", local = TRUE)
 
 # Keep one modern year. Prediction training always uses national county inputs.
 get_hch_modern_inputs <- local({
@@ -1330,17 +1327,30 @@ get_hch_modern_inputs <- local({
   function(year, include_msa = FALSE) {
     key <- paste(as.integer(year), isTRUE(include_msa), sep = ":")
     if (identical(key, cached_year)) return(cached)
-    loader <- make_app_data_loader()
-    panel <- loader$get_state()
-    panel <- panel[panel$year == as.integer(year), , drop = FALSE]
+    if (!isTRUE(include_msa)) {
+      counties <- get_historical_state_counties(year)
+      components <- counties[c("geofips", "modern_statefips", "nc", "ac")]
+      names(components)[2L] <- "statefips"
+      canonical <- as.data.frame(get_state_adjustment_inputs("State_historical_adjustment_counties.dta"))
+      row <- match(components$geofips, canonical$geofips)
+      geography <- canonical[row, , drop = FALSE]
+      # A missing canonical BEA-unit adjustment remains missing; no county or
+      # neighbouring-region value is substituted for that unit.
+      geography$geofips <- components$geofips
+      geography$statefips <- components$statefips
+      geography$ac <- components$ac
+      cached <<- list(components = components, geography = geography)
+      cached_year <<- key
+      return(cached)
+    }
+    # Preserve the existing MSA prediction universe and complete BEA county units.
     static <- as.data.frame(get_state_adjustment_inputs())
-    row <- match(static$statefips, panel$statefips)
-    if (anyNA(row)) stop("National county prediction inputs are missing a modern state.")
+    counties <- get_historical_state_counties(year)
+    row <- match(static$geofips, counties$geofips)
+    if (anyNA(row)) stop("National county prediction inputs are missing a BEA county unit.")
     components <- static[c("geofips", "statefips", "ac")]
-    components$nc <- vapply(seq_len(nrow(static)), function(i)
-      as.numeric(panel[[paste0("nc", static$ch_slot[i])]][row[i]]), numeric(1))
-    slot_area <- vapply(seq_len(nrow(static)), function(i)
-      as.numeric(panel[[paste0("ac", static$ch_slot[i])]][row[i]]), numeric(1))
+    components$nc <- counties$nc[row]
+    slot_area <- counties$ac[row]
     if (any(!is.finite(slot_area)) || any(abs(slot_area - components$ac) > 1e-7 * (1 + abs(components$ac))))
       stop("County prediction membership does not match the modern CH land-area slots.")
     if (isTRUE(include_msa)) {
@@ -1723,47 +1733,7 @@ ui <- fluidPage(title = "Agglomeration Effects USA",
   )
 )
 
-state_admission_year <- function(statefips) {
-  # Calendar-year admission dates; same-year admissions are eligible.
-  # https://www.census.gov/dataviz/visualizations/048/508.php
-  admission <- c(`1` = 1819L, `2` = 1959L, `4` = 1912L, `5` = 1836L,
-    `6` = 1850L, `8` = 1876L, `9` = 1788L, `10` = 1787L, `12` = 1845L,
-    `13` = 1788L, `15` = 1959L, `16` = 1890L, `17` = 1818L, `18` = 1816L,
-    `19` = 1846L, `20` = 1861L, `21` = 1792L, `22` = 1812L, `23` = 1820L,
-    `24` = 1788L, `25` = 1788L, `26` = 1837L, `27` = 1858L, `28` = 1817L,
-    `29` = 1821L, `30` = 1889L, `31` = 1867L, `32` = 1864L, `33` = 1788L,
-    `34` = 1787L, `35` = 1912L, `36` = 1788L, `37` = 1789L, `38` = 1889L,
-    `39` = 1803L, `40` = 1907L, `41` = 1859L, `42` = 1787L, `44` = 1790L,
-    `45` = 1788L, `46` = 1889L, `47` = 1796L, `48` = 1845L, `49` = 1896L,
-    `50` = 1791L, `51` = 1788L, `53` = 1889L, `54` = 1863L, `55` = 1848L,
-    `56` = 1890L)
-  id <- suppressWarnings(as.numeric(as.character(statefips)))
-  valid <- is.finite(id) & id == floor(id) & as.character(id) %in% names(admission)
-  if (any(!valid)) stop("State data contain a missing or unknown state FIPS code.")
-  unname(admission[as.character(id)])
-}
-
-state_admission_sample <- function(data, sample_year, scope) {
-  if (length(sample_year) != 1L || !is.finite(sample_year) || sample_year != floor(sample_year))
-    stop("Choose a valid historical sample year for state membership.")
-  if (length(scope) != 1L || !scope %in% c("states_only", "states_territories"))
-    stop("Choose a historical territory scope.")
-  if (!"statefips" %in% names(data)) stop("State data require a state FIPS code.")
-  admitted <- state_admission_year(data$statefips)
-  keep <- if (scope == "states_only") admitted <= sample_year else rep(TRUE, nrow(data))
-  data$state_admission_year <- admitted
-  list(data = data[keep, , drop = FALSE], excluded = data[!keep, intersect(
-    c("statefips", "state_name", "state_admission_year"), names(data)), drop = FALSE],
-    eligible_n = as.integer(sum(keep)), excluded_n = as.integer(sum(!keep)))
-}
-
-state_sample_metadata <- function(details) {
-  if (!identical(details$analysis_level, "State")) return(character())
-  c(`State membership rule` = if (identical(details$sample_scope, "states_only"))
-      paste("Admitted to the Union by the end of", details$sample_year) else
-      "Modern states with historical state or territory coverage",
-    `States eligible before data exclusions` = details$statehood_eligible_n)
-}
+state_sample_metadata <- function(details) historical_state_metadata(details)
 
 state_ch_result <- function(input, data) {
   year <- suppressWarnings(as.integer(input$year_modern))
@@ -1784,20 +1754,29 @@ state_ch_result <- function(input, data) {
   hch_settings <- if (historical_ch) hch_prediction_settings(input) else NULL
   hch_years <- list()
   prefix <- if (historical_ch) "HCH" else if (construction == "county_population") "GG" else "AW"
-  suffix <- if (scope == "states_only") "_sy" else ""
+  suffix <- ""
   sample_col <- paste0(prefix, if (historical_ch) "_" else "pop_", sample_year, suffix)
   instrument_col <- paste0(prefix, if (historical_ch) "_" else "pop_", iv_year, suffix)
   valid_cols <- paste0(prefix, "valid_", c(sample_year, iv_year), suffix)
   historical_fields <- if (historical_ch) unlist(lapply(c(sample_year, iv_year), function(year)
     paste0(c("HCHobs_", "HCHnumer_", "HCHcover_"), year, suffix))) else c(sample_col, instrument_col, valid_cols)
-  needed <- unique(c("year", "statefips", "state_name", "LHS", "RHS", "ch_complete", historical_fields))
+  needed <- c("year", "sample_year", "scope", "region_id", "region_name", "LHS", "RHS", "ch_complete")
   absent <- setdiff(needed, names(data))
   if (length(absent)) stop(paste("State data fields are missing:", paste(absent, collapse = ", ")))
-  df <- data[data$year %in% year, , drop = FALSE]
-  if (!nrow(df)) stop("State data are unavailable for the selected modern year.")
-  admission_sample <- state_admission_sample(df, sample_year, scope)
-  df <- admission_sample$data
-  if (!nrow(df)) stop("No states had joined the Union by the selected historical sample year.")
+  df <- data[data$year %in% year & data$sample_year %in% sample_year &
+    data$scope == historical_region_scope(scope), , drop = FALSE]
+  if (!nrow(df)) stop("Historical regions are unavailable for the selected year and scope.")
+  membership <- get_historical_state_membership(sample_year, scope)
+  region_names <- setNames(df$region_name, df$region_id)
+  region_reasons <- setNames(if ("input_reason" %in% names(df)) as.character(df$input_reason) else
+    rep("", nrow(df)), df$region_id)
+  region_reasons[is.na(region_reasons)] <- ""
+  region_eligible_n <- nrow(df)
+  parts <- historical_state_components(year, sample_year, scope, membership)
+  df <- historical_state_wide(df, parts)
+  df <- attach_historical_region_instruments(df, sample_year, scope, c(sample_year, iv_year))
+  absent <- setdiff(historical_fields, names(df))
+  if (length(absent)) stop(paste("Historical regional instruments are missing:", paste(absent, collapse = ", ")))
   if (historical_ch) {
     if (hch_settings$variant == "historical" && hch_settings$basis == "source" && hch_settings$instrument_method == "derivative") {
       moments <- function(year) {
@@ -1805,22 +1784,33 @@ state_ch_result <- function(input, data) {
         coverage <- df[[paste0("HCHcover_", year, suffix)]]
         value <- historical_ch_from_moments(population, df[[paste0("HCHnumer_", year, suffix)]],
           coverage, coverage_choice$minimum)
-        list(states = data.frame(statefips = df$statefips, index = value$value, coverage = coverage,
+        list(states = data.frame(region_id = df$region_id, region_name = df$region_name, index = value$value, coverage = coverage,
           population = population, keep = value$keep), diagnostics = list(nobs = NA_integer_, coefficients = numeric()))
       }
     } else {
       national <- get_hch_modern_inputs(year)
-      county_moments <- get_hch_county_moments()
+      county_moments <- get_hch_county_moments("State_historical_county_moments.dta")
       geography <- scale_model_controls(national$geography, hch_settings$geo_vars)
       moments <- function(year) hch_prediction_year(county_moments, national$components, geography,
-        historical_year = year, scope = if (scope == "states_only") "states_yearend" else scope,
+        historical_year = year, scope = scope,
         basis = hch_settings$basis, variant = hch_settings$variant,
-        geo_vars = hch_settings$geo_vars, minimum = coverage_choice$minimum)
+        geo_vars = hch_settings$geo_vars, minimum = coverage_choice$minimum,
+        membership = membership[c("geofips", "region_id")])
     }
-    for (selected_year in unique(c(sample_year, iv_year))) hch_years[[as.character(selected_year)]] <- moments(selected_year)
+    for (selected_year in unique(c(sample_year, iv_year))) {
+      current <- moments(selected_year)
+      current$diagnostics$source_pieces_path <- "State_historical_source_pieces.dta"
+      current$states$region_name <- unname(region_names[as.character(current$states$region_id)])
+      current$states$statefips <- NULL
+      if (!is.null(current$regions)) {
+        current$regions$region_name <- unname(region_names[as.character(current$regions$region_id)])
+        current$regions$statefips <- NULL
+      }
+      hch_years[[as.character(selected_year)]] <- current
+    }
     values <- function(year) {
       states <- hch_years[[as.character(year)]]$states
-      row <- match(df$statefips, states$statefips)
+      row <- match(df$region_id, states$region_id)
       list(value = states$index[row], coverage = states$coverage[row], keep = !is.na(row) & states$keep[row])
     }
     sample_values <- values(sample_year)
@@ -1838,10 +1828,14 @@ state_ch_result <- function(input, data) {
     selected_instrument <- df[[instrument_col]]
   }
   population_missing_n <- sum(!valid_population)
+  region_reasons[df$region_id[!valid_population]] <- if (historical_ch)
+    "Historical instrument inputs or selected coverage are unavailable." else
+    "Historical population is unavailable under the selected matching and coverage rules."
   df <- df[valid_population, , drop = FALSE]
   transformed <- transform_historical_instrument(selected_instrument[valid_population], input$instrument_form,
     population = !historical_ch, historical_ch = historical_ch)
   df$instrument <- transformed$values
+  region_reasons[df$region_id[!transformed$keep]] <- "The selected instrument transformation is undefined."
   df <- df[transformed$keep, , drop = FALSE]
   if (!nrow(df)) {
     message <- "No states have a usable historical instrument under the selected construction and transformation."
@@ -1849,14 +1843,23 @@ state_ch_result <- function(input, data) {
       "zero or negative values were excluded by the log transformation.")
     stop(message)
   }
-  df$state_id <- df$statefips
-  df$clusterID <- df$statefips
+  df$clusterID <- df$region_id
   df <- df[is.finite(df$LHS) & is.finite(df$RHS), , drop = FALSE]
   add_coverage <- function(result) {
-    result$statehood_cutoff_year <- if (scope == "states_only") sample_year else NULL
-    result$statehood_eligible_n <- admission_sample$eligible_n
-    result$statehood_excluded_n <- admission_sample$excluded_n
-    result$statehood_excluded_states <- admission_sample$excluded
+    used <- unique(unlist(lapply(result$models, function(model)
+      result$data_for_fs$region_id[app_model_rows(model)])))
+    result$historical_region_eligible_n <- region_eligible_n
+    result$historical_region_names <- sort(unname(region_names[used]))
+    result$historical_region_excluded_names <- sort(unname(region_names[!names(region_names) %in% used]))
+    for (model in result$models) if (!is.null(model$excluded_states) && nrow(model$excluded_states))
+      region_reasons[as.character(model$excluded_states$state_id)] <- model$excluded_states$reason
+    excluded <- setdiff(names(region_names), used)
+    missing_reason <- excluded[!nzchar(region_reasons[excluded])]
+    region_reasons[missing_reason] <- "Required county components or model inputs are incomplete."
+    result$historical_region_exclusions <- data.frame(region_id = excluded,
+      region_name = unname(region_names[excluded]), reason = unname(region_reasons[excluded]))
+    result$historical_region_definition <- "County historical fixed-effect groups"
+    result$covariance_unit <- "Historical state or territory group"
     if (historical_ch) {
       result$state_hch_method <- hch_settings$instrument_method
       result$hch_gmm_steps <- hch_settings$gmm_steps
@@ -1877,7 +1880,7 @@ state_ch_result <- function(input, data) {
   model <- withCallingHandlers(
     if (historical_ch) fit_ch_with_historical_instrument(df,
       fit = function(data, method) fit_ch_model(data, "LHS", method = if (method == "NLS_pilot") "OLS" else method, se_spec = "robust"),
-      hch_year = hch_years[[as.character(iv_year)]], region_ids = df$statefips,
+      hch_year = hch_years[[as.character(iv_year)]], region_ids = df$region_id,
       instrument_method = hch_settings$instrument_method, gmm_steps = hch_settings$gmm_steps, method = method)
     else fit_ch_model(df, "LHS", method = method, se_spec = "robust"),
     warning = function(warning) {
@@ -1898,7 +1901,7 @@ state_ch_result <- function(input, data) {
     model_n = setNames(nobs(model), "Ciccone–Hall"), model_clusters = NA_integer_,
     model_warnings = warnings, geo_controls = character(), water_controls = character(),
     water_year = NA_integer_, new_controls = character(),
-    cluster_data = list(clusterID = df$clusterID, state_id = df$state_id),
+    cluster_data = list(clusterID = df$clusterID, state_id = df$region_id),
     data_for_fs = df, fe_part = "0", vcov_arg = "hetero"))
 }
 
@@ -2731,7 +2734,7 @@ server <- function(input, output, session) {
     if (details$se_spec == "cluster_instrument" && !is.null(details$cluster_data$clusterID)) {
       se_description <- if (is_aggregated_population(details) || identical(details$instrument_type, "historical_ch")) paste("Cluster on", details$analysis_level) else if (details$instrument_type %in% c("overlap", "max_density_overlap")) "Cluster on historical county" else "Cluster on historical instrument"
     } else if (details$se_spec == "cluster_state" && !is.null(details$cluster_data$state_id)) {
-      se_description <- "Cluster on modern state"
+      se_description <- if (identical(details$analysis_level, "State")) "Cluster on historical state or territory group" else "Cluster on modern state"
     } else if (details$se_spec == "spatial") {
       spatial_cutoff_formatted <- sprintf("%.0f", as.numeric(details$spatial_cutoff))
       se_description <- paste0("Spatial (Conley). ", spatial_cutoff_formatted, " km cutoff. Uniform kernel")
@@ -2940,10 +2943,14 @@ server <- function(input, output, session) {
       table$sample_year <- details$sample_year
       table$sample_scope <- details$sample_scope
       if (identical(details$analysis_level, "State")) {
-        table$state_membership_rule <- unname(state_sample_metadata(details)[["State membership rule"]])
-        table$statehood_cutoff_year <- if (is.null(details$statehood_cutoff_year)) NA_integer_ else details$statehood_cutoff_year
-        table$statehood_eligible_n <- details$statehood_eligible_n
-        table$statehood_excluded_n <- details$statehood_excluded_n
+        table$regional_definition <- details$historical_region_definition
+        table$historical_boundary_year <- details$sample_year
+        table$historical_groups_before_exclusions <- details$historical_region_eligible_n
+        table$historical_groups_in_estimation <- paste(details$historical_region_names, collapse = "; ")
+        table$historical_groups_excluded <- paste(details$historical_region_excluded_names, collapse = "; ")
+        omissions <- details$historical_region_exclusions
+        table$historical_group_exclusion_reasons <- paste(paste0(omissions$region_name, ": ", omissions$reason), collapse = "; ")
+        table$covariance_unit <- details$covariance_unit
       }
       table$instrument_year <- details$iv_year
       table$instrument_construction <- instrument_name(details$instrument_type, details$approach)
@@ -3024,7 +3031,7 @@ server <- function(input, output, session) {
     content = function(file) {
       details <- valid_result()
       if (!identical(details$instrument_type, "historical_ch")) stop("Run a Historical CH specification first.")
-      region_column <- if (identical(details$analysis_level, "MSA")) "msafips" else "statefips"
+      region_column <- if (identical(details$analysis_level, "MSA")) "msafips" else "region_id"
       model_states <- unique(unlist(lapply(details$models, function(model)
         details$data_for_fs[[region_column]][app_model_rows(model)])))
       tables <- lapply(names(details$hch_prediction_diagnostics), function(year) {
@@ -3041,9 +3048,9 @@ server <- function(input, output, session) {
         states$in_regional_sample <- states$region_id %in% model_states
         states$eligible_before_model <- states$region_id %in% details$data_for_fs[[region_column]]
         if (identical(details$analysis_level, "State")) {
-          states$state_admission_year <- state_admission_year(states$statefips)
-          states$eligible_by_statehood <- if (details$sample_scope == "states_only")
-            states$state_admission_year <= details$sample_year else TRUE
+          states$statefips <- NULL
+          states$historical_boundary_year <- details$sample_year
+          states$regional_definition <- details$historical_region_definition
         }
         states$prediction_rmse <- if (length(value$diagnostics$rmse)) value$diagnostics$rmse else NA_real_
         coefficients <- value$diagnostics$coefficients

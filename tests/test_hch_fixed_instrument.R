@@ -37,27 +37,6 @@ expected <- vapply(c(10, 20), function(id) {
 near(unname(hch_fixed_instrument(metro, 1.3, pieces)), expected)
 near(unname(hch_fixed_instrument(metro, 1, pieces)), metro$regions$index)
 
-# State year-end scope uses the source admission flag, including source pieces
-# assigned across a modern state border; existing census-date scope is unchanged.
-yearend_pieces <- pieces
-yearend_pieces$in_historical_state <- rep(c(1, 0), 4)
-yearend_pieces$in_historical_state_yearend <- 1L
-yearend_moments <- moments
-yearend_moments$pop_sy <- moments$pop
-yearend_moments$numer_sy <- moments$numer
-yearend_moments$known_area_km2_sy <- moments$known_area_km2
-old_pieces <- yearend_pieces[yearend_pieces$in_historical_state == 1, ]
-yearend_moments$pop_s <- old_pieces$allocated_population
-yearend_moments$numer_s <- old_pieces$allocated_population * old_pieces$source_log_density
-yearend <- hch_prediction_year(yearend_moments, modern, historical_year = 1900, scope = "states_yearend")
-census <- hch_prediction_year(yearend_moments, modern, historical_year = 1900, scope = "states_only")
-near(yearend$regions$index, base$regions$index)
-near(unname(hch_fixed_instrument(yearend, 1.3, yearend_pieces)), unname(exact))
-stopifnot(max(abs(hch_fixed_instrument(census, 1.3, yearend_pieces) - exact)) > .1)
-missing_flag <- yearend_pieces[setdiff(names(yearend_pieces), "in_historical_state_yearend")]
-message <- tryCatch({hch_fixed_instrument(yearend, 1.3, missing_flag); ""}, error = conditionMessage)
-stopifnot(grepl("calendar-year State scope", message, fixed = TRUE))
-
 # Inconsistent source populations cannot silently define a different instrument.
 bad <- pieces; bad$allocated_population[1] <- 20
 message <- tryCatch({hch_fixed_instrument(base, 1.2, bad); ""}, error = conditionMessage)

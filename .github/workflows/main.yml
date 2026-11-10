@@ -69,7 +69,7 @@ jobs:
 
       - name: Check deployment data files
         run: |
-          printf '%s\n' 'tests' '.github' 'MSA_analysis_data.dta' 'master_county_build.dta' 'State_CH_analysis_data.dta' > .rscignore
+          printf '%s\n' 'tests' '.github' 'MSA_analysis_data.dta' 'master_county_build.dta' 'State_CH_analysis_data.dta' 'State_historical_analysis_data.dta' > .rscignore
           Rscript --vanilla .github/scripts/run-locked.R .github/scripts/check-app-bundle.R
 
       - name: Check app models and compare historical instruments

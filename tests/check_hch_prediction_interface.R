@@ -30,15 +30,14 @@ for (basis in c("source", "modern")) for (variant in c("historical", "a", "b", "
   result <- app$state_ch_result(chosen, app$state_data)
   stopifnot(result$state_hch_variant == variant, result$state_hch_density_basis == basis,
     is.finite(coef(result$models[[1]])["ch_elasticity"]),
-    result$statehood_cutoff_year == 1790L, result$statehood_eligible_n == 13L,
-    result$n_obs <= 13L, all(app$state_admission_year(result$data_for_fs$statefips) <= 1790L))
+    result$sample_year == 1790L, result$historical_region_eligible_n == 13L,
+    result$n_obs <= 13L, !"statefips" %in% names(result$data_for_fs))
   sample <- result$hch_prediction_diagnostics[["1790"]]$states
   instrument <- result$hch_prediction_diagnostics[["1900"]]$states
-  expected <- intersect(sample$statefips[sample$keep], instrument$statefips[instrument$keep])
-  expected <- expected[app$state_admission_year(expected) <= as.integer(settings$state_sample_year)]
-  stopifnot(setequal(result$data_for_fs$statefips, expected),
+  expected <- intersect(sample$region_id[sample$keep], instrument$region_id[instrument$keep])
+  stopifnot(setequal(result$data_for_fs$region_id, expected),
     isTRUE(all.equal(result$data_for_fs$instrument,
-      instrument$index[match(result$data_for_fs$statefips, instrument$statefips)], tolerance = 1e-12)))
+      instrument$index[match(result$data_for_fs$region_id, instrument$region_id)], tolerance = 1e-12)))
   if (variant != "historical") {
     stopifnot(length(result$hch_prediction_geo_vars) == 22L,
       result$hch_prediction_diagnostics[["1900"]]$diagnostics$nobs > 2000L,
@@ -57,7 +56,7 @@ for (basis in c("source", "modern")) {
 # Changing final region support or coverage cannot refit the national prediction.
 changed <- app$state_ch_result(modifyList(settings, list(state_hch_variant = "ab",
   state_hch_density_basis = "modern", state_sample_year = "1800", state_hch_coverage = "none")),
-  app$state_data[app$state_data$statefips != 36, , drop = FALSE])
+  app$state_data[app$state_data$region_name != "New York", , drop = FALSE])
 stopifnot(identical(changed$hch_prediction_diagnostics[["1900"]]$diagnostics$coefficients,
   results[["modern ab"]]$hch_prediction_diagnostics[["1900"]]$diagnostics$coefficients))
 
@@ -73,16 +72,16 @@ shiny::testServer(app$server, {
   diagnostics <- read.csv(output$download_hch_diagnostics, stringsAsFactors = FALSE)
   stopifnot(all(coefficients$historical_ch_variant == "ab"),
     all(coefficients$historical_ch_density_basis == "modern"),
-    all(coefficients$statehood_cutoff_year == 1790L),
-    all(coefficients$statehood_eligible_n == 13L),
-    all(coefficients$statehood_excluded_n == 35L),
-    grepl("Admitted to the Union by the end of 1790", output$analysis_details$html, fixed = TRUE),
+    all(coefficients$historical_boundary_year == 1790L),
+    all(coefficients$historical_groups_before_exclusions == 13L),
+    all(coefficients$covariance_unit == "Historical state or territory group"),
+    grepl("Historical county fixed-effect groups", output$analysis_details$html, fixed = TRUE),
     setequal(diagnostics$historical_year, c(1790L, 1900L)),
     setequal(diagnostics$record_type, c("state", "prediction_coefficient")),
     all(diagnostics$historical_ch_variant == "ab"))
   state_rows <- diagnostics[diagnostics$record_type == "state", , drop = FALSE]
-  stopifnot(identical(as.logical(state_rows$eligible_by_statehood),
-    app$state_admission_year(state_rows$statefips) <= 1790L))
+  stopifnot(all(state_rows$historical_boundary_year == 1790L),
+    !"statefips" %in% names(state_rows), all(nzchar(state_rows$region_name)))
   session$setInputs(state_hch_variant = "historical", state_hch_density_basis = "source")
   stopifnot(isolate(analysis_output())$state_hch_variant == "ab")
   coefficients <- read.csv(output$download_coefficients, stringsAsFactors = FALSE)

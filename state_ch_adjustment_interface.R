@@ -5,8 +5,8 @@ help_state_adjusted_ch <- paste(
   "The Geography option uses geography and transport only. Existing MSA human-capital options then adjust the MSA outcome separately.",
   "The Geography + schooling and college option puts schooling and college share inside each county contribution. The fixed schooling return is the existing micro estimate (about 0.102623); the college-share coefficient is 0.75. Geography is reestimated after subtracting h + 0.75 times college share from county log GDP per employment, where h is the schooling return times years of schooling. The county density regressor remains log employment per unit of land area, as in the ordinary County IV model. The index contribution becomes n times exp(X gamma + h + 0.75 times college share) times density to the power theta minus one. The denominator remains actual employment. The aggregate outcome receives no further schooling or college adjustment.",
   "Schooling and college places the fixed county schooling and college effects inside CH without estimating geography coefficients or fitting a county calibration. Missing geography inputs do not affect this specification. The aggregate outcome is unadjusted.",
-  "For Geography and the combined adjustment, calibration uses eligible counties in all constituent states, including nonmetropolitan counties. Every constituent county remains in the index, including counties outside the historical calibration sample. Missing a required geography or human-capital input in a positive-employment county excludes the whole MSA or state.",
-  "When geography is estimated, joint standard errors and the zero-elasticity S test account for estimated geography and observations shared by the two stages. The county calibration must be identified. MSA clustering puts an MSA and its constituent counties together; counties outside represented MSAs retain their own MSA or county cluster. State clustering joins states connected by interstate MSAs to keep shared observations together.",
+  "State calibration uses eligible counties assigned to the retained historical groups. MSA calibration uses eligible counties in all constituent modern states, including nonmetropolitan counties. Every constituent county remains in the index, including counties outside the historical calibration sample. Missing a required geography or human-capital input in a positive-employment county excludes the whole region.",
+  "When geography is estimated, joint standard errors and the zero-elasticity S test account for estimated geography and observations shared by the two stages. The county calibration must be identified. State analyses combine county and regional scores within each historical state or territory group. MSA clustering puts an MSA and its constituent counties together; when an MSA analysis clusters by modern state, connected modern states are joined to keep shared observations together.",
   sep = "\n")
 
 state_adjustment_settings_ui <- function(level = "State", section = c("model", "controls")) {
@@ -59,16 +59,16 @@ state_adjustment_settings_ui <- function(level = "State", section = c("model", "
 }
 
 get_state_adjustment_inputs <- local({
-  cached <- NULL
+  cached <- new.env(parent = emptyenv())
   function(path = "State_CH_adjustment_counties_data.dta") {
-    if (!is.null(cached)) return(cached)
+    if (!is.null(cached[[path]])) return(cached[[path]])
     if (!file.exists(path)) stop("County geography inputs are unavailable. Run the county adjustment data build.")
     value <- haven::read_dta(path)
     required <- c("statefips", "geofips", "ch_slot", "ac")
     if (!all(required %in% names(value)) || anyDuplicated(value$geofips) || anyDuplicated(value[c("statefips", "ch_slot")]))
       stop("County geography inputs have invalid fields or county slots.")
-    cached <<- value
-    cached
+    cached[[path]] <- value
+    value
   }
 })
 
@@ -132,7 +132,8 @@ prepare_county_geography <- function(input, data, level = "State", se_spec = "cl
     if (is.null(construction)) construction <- "area_population"
     if (!construction %in% c("area_population", "county_population")) stop("Choose a county population construction.")
   }
-  static <- as.data.frame(get_state_adjustment_inputs())
+  static <- as.data.frame(get_state_adjustment_inputs(if (level == "State")
+    "State_historical_adjustment_counties.dta" else "State_CH_adjustment_counties_data.dta"))
   input_vars <- c(geo_vars, if (has_hc) c("avg_schooling_10_14", "college_share"))
   if (!all(input_vars %in% names(static)))
     stop("Selected county adjustment fields are missing from the data build.")
@@ -159,9 +160,20 @@ prepare_county_geography <- function(input, data, level = "State", se_spec = "cl
     for (v in input_vars) county[[v]][found] <- static[[v]][canonical[found]]
   }
   if (level == "State") {
-    components <- static[static$statefips %in% data$state_id, , drop = FALSE]
-    components$region_id <- components$statefips
-    data$region_id <- data$state_id
+    membership <- get_historical_state_membership(get("sample_year"), input$sample_scope)
+    components <- historical_state_components(year, get("sample_year"), input$sample_scope, membership)
+    components <- components[components$region_id %in% data$region_id, , drop = FALSE]
+    components$statefips <- components$modern_statefips
+    canonical_member <- match(components$geofips, static$geofips)
+    for (v in input_vars) components[[v]] <- static[[v]][canonical_member]
+    if (has_geo) {
+      field <- paste0("hist_state_fe_", get("sample_year"),
+        if (input$sample_scope == "states_only") "_s" else "")
+      if (!field %in% names(county)) stop("The county calibration lacks the selected historical fixed-effect group.")
+      groups <- unique(membership[c("region_id", "region_name")])
+      county$region_id <- groups$region_id[match(trimws(as.character(county[[field]])), groups$region_name)]
+      county <- county[!is.na(county$region_id) & county$region_id %in% data$region_id, , drop = FALSE]
+    }
   } else {
     membership <- get_msa_ch_membership()
     members <- membership[membership$msafips %in% data$msafips, , drop = FALSE]
@@ -202,8 +214,8 @@ prepare_county_geography <- function(input, data, level = "State", se_spec = "cl
   if (any(abs(components$area[known_area] - components$ac[known_area]) > 1e-7 * (1 + abs(components$ac[known_area]))))
     stop("County membership order does not match the CH land-area slots.")
   if (level == "State") {
-    data$joint_cluster <- paste0("s", data$state_id)
-    if (has_geo) county$joint_cluster <- paste0("s", county$state_id)
+    data$joint_cluster <- as.character(data$region_id)
+    if (has_geo) county$joint_cluster <- as.character(county$region_id)
   } else if (se_spec == "cluster_state" && !has_geo) {
     data$joint_cluster <- paste0("s", data$state_id)
   } else if (se_spec == "cluster_state") {
@@ -268,6 +280,7 @@ prepare_county_geography <- function(input, data, level = "State", se_spec = "cl
     component_vars = c(geo_vars, if (has_hc) c("schooling", "college")),
     construction = construction, water_year = water_year, mode = mode,
     settings = list(method = input$analysis_type, mode = mode, geo_vars = geo_vars,
+      calibration_by_region = identical(level, "State"),
       beta_school = beta, kappa_college = if (has_hc) .75 else 0, schooling_reference = 0,
       county_controls = if (area) "ln_area" else character(), county_fe = has_geo,
       se_spec = se_spec, county_instrument_label = if (has_geo) instrument_name(construction) else NA_character_))
@@ -281,15 +294,15 @@ state_ch_adjusted_result <- function(input, data, population_missing_n, transfor
       list(method = if (method == "NLS_pilot") "IV" else method, pilot = method == "NLS_pilot")))
   model <- withCallingHandlers(
     if (!is.null(hch_settings)) fit_ch_with_historical_instrument(prepared$data, fit = fit,
-      hch_year = hch_year, region_ids = prepared$data$statefips,
+      hch_year = hch_year, region_ids = prepared$data$region_id,
       instrument_method = hch_settings$instrument_method, gmm_steps = hch_settings$gmm_steps,
       method = input$analysis_type) else fit(prepared$data, input$analysis_type),
     warning = function(w) { warnings <<- unique(c(warnings, conditionMessage(w))); invokeRestart("muffleWarning") })
   model$adjustment_mode <- prepared$mode
   model_name <- switch(prepared$mode, both = "CH: geography + human capital", human_capital = "CH: Schooling and college", geography = "CH: county geography")
   excluded <- model$excluded_states
-  if (nrow(excluded)) warnings <- c(warnings, paste("Incomplete county adjustment inputs exclude whole states:",
-    paste(data$state_name[match(excluded$state_id, as.character(data$state_id))], collapse = ", ")))
+  if (nrow(excluded)) warnings <- c(warnings, paste("Incomplete county adjustment inputs exclude whole historical groups:",
+    paste(data$region_name[match(excluded$state_id, as.character(data$region_id))], collapse = ", ")))
   list(models = setNames(list(model), model_name), first_stage_models = list(), analysis_type = input$analysis_type,
     approach = "density", density_measure = "CH", analysis_level = "State", year_modern = as.integer(input$year_modern),
     state_ch_mode = "county_adjusted", adjustment_mode = prepared$mode, county_calibration_instrument = prepared$construction,
@@ -307,5 +320,5 @@ state_ch_adjusted_result <- function(input, data, population_missing_n, transfor
     model_warnings = warnings, geo_controls = if (prepared$mode != "human_capital") input$state_geo_controls else character(),
     water_controls = if (prepared$mode != "human_capital") input$state_water_controls else character(),
     water_year = prepared$water_year, new_controls = prepared$geo_vars,
-    cluster_data = list(clusterID = data$clusterID, state_id = data$state_id), data_for_fs = data, fe_part = "0", vcov_arg = "hetero")
+    cluster_data = list(clusterID = data$clusterID, state_id = data$region_id), data_for_fs = data, fe_part = "0", vcov_arg = "hetero")
 }

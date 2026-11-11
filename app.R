@@ -1733,7 +1733,10 @@ ui <- fluidPage(title = "Agglomeration Effects USA",
   )
 )
 
-state_sample_metadata <- function(details) historical_state_metadata(details)
+state_sample_metadata <- function(details) {
+  if (!identical(details$analysis_level, "State")) return(character())
+  historical_state_metadata(details)
+}
 
 state_ch_result <- function(input, data) {
   year <- suppressWarnings(as.integer(input$year_modern))

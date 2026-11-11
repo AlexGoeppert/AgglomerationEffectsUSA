@@ -83,7 +83,7 @@ attach_historical_region_instruments <- function(data, sample_year, scope, years
     path = "State_historical_instruments.dta") {
   values <- read_historical_region_input(path,
     c("sample_year", "scope", "historical_year", "region_id"),
-    c("GGpop", "GGvalid", "AWpop", "AWvalid", "HCHobs", "HCHnumer", "HCHcover"))
+    c("GGmatchedpop", "AWobs", "HCHobs", "HCHnumer", "HCHcover"))
   values <- values[values$sample_year == as.integer(sample_year) &
     values$scope == historical_region_scope(scope), , drop = FALSE]
   fields <- grep("^(GG|AW|HCH)", names(values), value = TRUE)
@@ -95,10 +95,108 @@ attach_historical_region_instruments <- function(data, sample_year, scope, years
   data
 }
 
+state_historical_year_inputs <- function(data, year, construction, coverage, hch = NULL) {
+  field <- function(name) {
+    column <- paste0(name, "_", year)
+    if (!column %in% names(data)) stop(paste("Missing historical regional input:", column))
+    data[[column]]
+  }
+  matched <- construction == "county_population"
+  population <- field(if (matched) "GGmatchedpop" else "AWobs")
+  known <- field("HCHcover")
+  valid_area <- is.finite(known) & known >= coverage$minimum
+  reason <- rep("", nrow(data))
+  reason[!is.finite(known) | known < 0] <- "Known-population area is unavailable."
+  below <- is.finite(known) & known >= 0 & !valid_area
+  reason[below] <- sprintf("Known-population area %.1f%% is below %s.", 100 * known[below], coverage$label)
+  missing_population <- !is.finite(population) | population <= 0
+  reason[missing_population & !nzchar(reason)] <- if (matched)
+    "No positive population can be assigned by county identity." else "No positive population can be allocated by area."
+  usable <- known
+  derivative <- NULL
+  if (!is.null(hch)) {
+    row <- match(data$region_id, hch$states$region_id)
+    usable <- hch$states$coverage[row]
+    derivative <- hch$states$index[row]
+    invalid <- is.na(row) | is.na(hch$states$keep[row]) | !hch$states$keep[row] | !is.finite(derivative)
+    below <- !nzchar(reason) & invalid & is.finite(usable) & usable < coverage$minimum
+    reason[below] <- sprintf("Area with usable index inputs %.1f%% is below %s.", 100 * usable[below], coverage$label)
+    reason[!nzchar(reason) & invalid] <- "The selected historical index lacks usable inputs."
+  }
+  inputs <- data.frame(region_id = data$region_id, region_name = data$region_name, historical_year = year,
+    known_area_coverage = known, mapped_area_coverage = field("HCHmappedcover"),
+    usable_index_coverage = if (is.null(hch)) NA_real_ else usable,
+    observed_population = population,
+    unknown_population_records = field(if (matched) "GGmiss" else "AWmiss"),
+    source_gap_flag = field(if (matched) "GGgap" else "AWgap"),
+    unallocated_source_records = field(if (matched) "GGunallocated" else "AWunallocated"),
+    historical_inputs_usable = !nzchar(reason), historical_input_reason = reason)
+  if (!is.null(hch)) inputs$derivative_index_at_theta_one <- derivative
+  if (matched) {
+    inputs$ambiguous_population_omitted <- field("GGexcludedpop")
+    inputs$ambiguous_positive_records_omitted <- field("GGexcludedn")
+    inputs$unmatched_population_area_allocated_to_region <- field("GGunmatchedawpop")
+    inputs$potential_unmatched_population_without_geometry <- field("GGunlocatedpop")
+  } else inputs$potential_omitted_population_without_geometry <- field("HCHomitted_pop")
+  inputs
+}
+
+historical_state_coverage_table <- function(details) {
+  rows <- details$historical_group_inputs
+  if (is.null(rows) || !nrow(rows)) return("")
+  rows <- rows[order(rows$region_name, rows$historical_year), , drop = FALSE]
+  pct <- function(x) ifelse(is.finite(x), sprintf("%.1f%%", 100 * x), "Unavailable")
+  displayed <- data.frame(Group = rows$region_name, Census = rows$historical_year,
+    "Known area" = pct(rows$known_area_coverage), check.names = FALSE)
+  if (identical(details$instrument_type, "historical_ch") &&
+      !isTRUE(all.equal(rows$known_area_coverage, rows$usable_index_coverage, tolerance = 1e-10)))
+    displayed[["Area with usable index inputs"]] <- pct(rows$usable_index_coverage)
+  displayed[["Missing-population records"]] <- rows$unknown_population_records
+  displayed[["Source gap"]] <- ifelse(rows$source_gap_flag > 0, "Yes", "")
+  displayed[["Unallocated records"]] <- rows$unallocated_source_records
+  if (all(is.na(rows$in_estimation))) {
+    displayed[["Fit assessment"]] <- ifelse(!is.na(rows$assessed_for_fit) & rows$assessed_for_fit, "Assessed",
+      ifelse(nzchar(rows$exclusion_reason), rows$exclusion_reason, "Assessment unavailable"))
+  } else displayed[["Estimation sample"]] <- ifelse(rows$in_estimation, "Included", rows$exclusion_reason)
+  tag <- htmltools::tags
+  as.character(tag$details(tag$summary("Coverage and exclusions by historical group"),
+    tag$div(style = "overflow-x:auto", tag$table(class = "table table-condensed",
+      tag$thead(tag$tr(lapply(names(displayed), tag$th))),
+      tag$tbody(lapply(seq_len(nrow(displayed)), function(i)
+        tag$tr(lapply(displayed[i, , drop = FALSE], function(x) tag$td(as.character(x))))))))))
+}
+
+state_sample_counts_text <- function(details) {
+  years <- paste(unique(c(details$sample_year, details$iv_year)), collapse = " and ")
+  text <- sprintf("%d of %d historical groups passed the source and coverage requirements in %s.",
+    details$historical_inputs_usable_n, details$historical_region_eligible_n, years)
+  inputs <- details$historical_group_inputs
+  if (any(!is.na(inputs$assessed_for_fit))) text <- paste(text, sprintf("%d groups entered the estimator.",
+    length(unique(inputs$region_id[!is.na(inputs$assessed_for_fit) & inputs$assessed_for_fit]))))
+  text
+}
+
+state_source_export <- function(details) {
+  table <- details$historical_group_inputs
+  table$instrument_construction <- details$instrument_type
+  table$known_area_coverage_required <- historical_ch_coverage(details$state_hch_coverage)$minimum
+  table$modern_year <- details$year_modern
+  table$historical_boundary_year <- details$sample_year
+  table$instrument_year <- details$iv_year
+  table$sample_scope <- details$sample_scope
+  table$fit_status <- if (is.null(details$fit_error)) "Estimated" else details$fit_error
+  if (!is.null(details$fit_error) && identical(details$stock_wright$status, "available")) {
+    table$stock_wright_S <- details$stock_wright$statistic
+    table$stock_wright_p <- details$stock_wright$p_value
+  }
+  table
+}
+
 historical_state_metadata <- function(details) {
   if (!identical(details$analysis_level, "State")) return(character())
   c(`Regional definition` = "Historical county fixed-effect groups",
     `Boundary year` = details$sample_year,
+    `Known-population area coverage` = historical_ch_coverage(details$state_hch_coverage)$label,
     `Groups before data exclusions` = details$historical_region_eligible_n,
     `Groups in the estimation` = paste(details$historical_region_names, collapse = ", "),
     `Covariance unit` = "Historical state or territory group")

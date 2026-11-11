@@ -271,7 +271,8 @@ fit_state_adjusted_ch <- function(data, county, components, settings = list()) {
     zr <- zr / sqrt(sum(zr^2))
     stock_wright <- sca_s_test(y, zr, W, index(1), gamma_influence, d$joint_cluster, cluster_levels)
   }
-  fail <- function(message) stop(errorCondition(message, class = "ch_fit_error", stock_wright = stock_wright))
+  fail <- function(message) stop(errorCondition(message, class = "ch_fit_error", stock_wright = stock_wright,
+    assessed_regions = as.character(d$region_id)))
   objective <- function(theta) sum((yr - partial(index(theta)$value))^2)
   grid <- sort(unique(c(1e-7, seq(0.05, 3, .05), 4, 8, 16, 32)))
   best <- which.min(vapply(grid, objective, numeric(1)))

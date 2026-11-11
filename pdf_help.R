@@ -24,7 +24,7 @@ pdf_help_bindings <- function() {
     help_approach = "02", help_analysis_type = "02", help_instrument_form = "07",
     help_use_fe = "08", help_fe_type = "08", help_sample_scope = "03",
     help_state_ch = "10", help_state_sample_year = "03", help_state_iv_year = "03",
-    help_state_instrument_type = "instrument", help_state_hch_coverage = "11",
+    help_state_instrument_type = "instrument", help_state_hch_coverage = "03",
     help_state_hch_variant = "20", help_state_hch_density_basis = "20",
     help_state_hch_prediction_geo_controls = "20", help_state_hch_prediction_water_controls = "20",
     help_state_hch_prediction_transport_controls = "20", help_state_hch_prediction_water_year = "20", help_geo_controls = "14",

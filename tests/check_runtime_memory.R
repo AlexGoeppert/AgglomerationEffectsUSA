@@ -109,7 +109,8 @@ check_runtime <- function() {
         app$state_data$scope==app$historical_region_scope(scope),,drop=FALSE]
       d <- app$attach_historical_region_instruments(d,1900,scope,1900)
       sum(d$ch_complete==1L & is.finite(d$LHS) & is.finite(d$RHS) &
-        d$AWvalid_1900==1L & is.finite(d$AWpop_1900) & d$AWpop_1900>=0,na.rm=TRUE)
+        is.finite(d$HCHcover_1900) & d$HCHcover_1900>=.80 &
+        is.finite(d$AWobs_1900) & d$AWobs_1900>0,na.rm=TRUE)
     }
     for (scope in c("states_only", "states_territories")) {
       exercise(list(analysis_level = "State", year_modern = "2020", state_sample_year = "1900", state_iv_year = "1900",

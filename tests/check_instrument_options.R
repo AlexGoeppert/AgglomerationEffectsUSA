@@ -79,10 +79,10 @@ local({
     state[[paste0("HCHobs_", year, suffix)]] <- 100 + i
     state[[paste0("HCHnumer_", year, suffix)]] <- (state$RHS - 2) * (100 + i)
     state[[paste0("HCHcover_", year, suffix)]] <- 1
-    for (prefix in c("GG", "AW")) {
-      state[[paste0(prefix, "pop_", year, suffix)]] <- 100 + i^2
-      state[[paste0(prefix, "valid_", year, suffix)]] <- 1L
-    }
+    for (field in c("GGmatchedpop", "AWobs")) state[[paste0(field, "_", year, suffix)]] <- 100 + i^2
+    state[[paste0("HCHmappedcover_",year,suffix)]] <- 1
+    for (field in c("AWmiss","AWunallocated","AWgap","HCHomitted_pop","GGmiss","GGgap","GGunallocated",
+        "GGexcludedn","GGexcludedpop","GGunmatchedawpop","GGunlocatedpop")) state[[paste0(field, "_", year, suffix)]] <- 0
   }
   source("historical_state_regions.R", local = core, encoding = "UTF-8")
   core$get_historical_state_membership <- function(...) state[c("region_id","region_name")]

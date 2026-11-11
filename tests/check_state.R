@@ -70,6 +70,11 @@ check_estimate <- function(result) {
 settings<-list(analysis_level="State",year_modern="2010",analysis_type="IV",state_ch_mode="standard",
   state_sample_year="1790",state_iv_year="1790",state_instrument_type="historical_ch",
   state_hch_coverage="none",sample_scope="states_territories",instrument_form="levels",show_map=FALSE)
+default_state <- app$state_ch_result(list(year_modern="2010", analysis_type="IV",
+  state_sample_year="1900", state_iv_year="1900", sample_scope="states_only"), app$state_data)
+stopifnot(default_state$instrument_type=="historical_ch", default_state$state_hch_method=="derivative",
+  default_state$state_hch_variant=="historical", default_state$state_hch_density_basis=="source",
+  default_state$hch_gmm_steps==1L, default_state$hch_coverage_required==.80, default_state$n_obs==45L)
 rows<-list()
 for(year in c(1790L,1850L,1890L,1900L)) for(scope in c("states_only","states_territories"))
   for(construction in c("county_population","area_population","historical_ch")) for(method in c("OLS","IV")) {

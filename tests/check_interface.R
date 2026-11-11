@@ -59,11 +59,12 @@ local({
   stopifnot(length(ui) == 1L)
   eval(ui[[1]], app)
   full_html <- htmltools::renderTags(app$ui)$html
-  stopifnot(identical(option_values(full_html, "state_hch_coverage"), c("80", "95", "none")),
+  stopifnot(identical(selected_value(full_html, "state_instrument_type"), "historical_ch"),
+    identical(option_values(full_html, "state_hch_coverage"), c("80", "95", "none")),
     identical(selected_value(full_html, "state_hch_coverage"), "80"),
-    grepl("Historical CH coverage:", full_html, fixed = TRUE),
+    grepl("Known-population area coverage:", full_html, fixed = TRUE),
     grepl("input.state_instrument_type == &#39;historical_ch&#39;", full_html, fixed = TRUE),
-    identical(app$pdf_help_button_topics("help_state_hch_coverage"), "11"))
+    identical(app$pdf_help_button_topics("help_state_hch_coverage"), "03"))
   stopifnot(identical(option_values(full_html, "state_hch_variant"), c("historical", "a", "b", "ab")),
     identical(selected_value(full_html, "state_hch_variant"), "historical"),
     identical(vapply(c("historical", "a", "b", "ab"), app$hch_variant_label, character(1), USE.NAMES = FALSE),

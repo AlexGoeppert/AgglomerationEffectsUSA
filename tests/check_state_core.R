@@ -66,7 +66,7 @@ local({
   changed<-panel();changed$AWobs_1790[1]<-changed$AWobs_1900[1]<-0
   changed$HCHcover_1790[2]<-.79;changed$AWobs_1900[3]<-NA_real_;changed$ch_complete[4]<-0L
   changed$AWmiss_1900[5]<-1;changed$AWgap_1900[5]<-1;changed$AWunallocated_1900[5]<-2
-  result<-core$state_ch_result(modifyList(settings,list(analysis_type="OLS")),changed)
+  result<-core$state_ch_result(modifyList(settings,list(analysis_type="OLS",state_hch_coverage="80")),changed)
   stopifnot(result$population_missing_n==3L,result$ch_missing_n==1L,result$n_obs==20L,
     regions[5] %in% result$data_for_fs$region_id[result$models[[1]]$rows],
     !any(regions[1:4] %in% result$data_for_fs$region_id[result$models[[1]]$rows]))
@@ -74,8 +74,8 @@ local({
   # A missing matched population still excludes the region under every cutoff.
   changed<-panel();changed$HCHcover_1790[1]<-0;changed$GGmatchedpop_1900[2]<-0
   matched<-modifyList(settings,list(analysis_type="OLS",state_instrument_type="county_population"))
-  filtered<-core$state_ch_result(matched,changed)
-  unfiltered<-core$state_ch_result(modifyList(matched,list(state_hch_coverage="none")),changed)
+  filtered<-core$state_ch_result(modifyList(matched,list(state_hch_coverage="80")),changed)
+  unfiltered<-core$state_ch_result(matched,changed)
   stopifnot(filtered$n_obs==22L,unfiltered$n_obs==23L,
     regions[1] %in% unfiltered$data_for_fs$region_id,!regions[2] %in% unfiltered$data_for_fs$region_id)
   expect_error<-function(chosen=settings,d=panel(),message) {
@@ -88,7 +88,7 @@ local({
   changed<-panel();changed$ch_complete<-0L
   expect_error(d=changed,message="No observations have complete county components")
   changed<-panel();changed$HCHcover_1790<-0
-  unavailable<-tryCatch(core$state_ch_result(settings,changed),error=identity)
+  unavailable<-tryCatch(core$state_ch_result(modifyList(settings,list(state_hch_coverage="80")),changed),error=identity)
   stopifnot(inherits(unavailable,"error"),unavailable$state_diagnostics$historical_inputs_usable_n==0L,
     nrow(unavailable$state_diagnostics$historical_group_inputs)==48L,
     all(!unavailable$state_diagnostics$historical_group_inputs$assessed_for_fit),

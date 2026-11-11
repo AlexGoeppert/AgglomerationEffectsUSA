@@ -60,8 +60,9 @@ local({
   eval(ui[[1]], app)
   full_html <- htmltools::renderTags(app$ui)$html
   stopifnot(identical(selected_value(full_html, "state_instrument_type"), "historical_ch"),
-    identical(option_values(full_html, "state_hch_coverage"), c("80", "95", "none")),
-    identical(selected_value(full_html, "state_hch_coverage"), "80"),
+    identical(option_values(full_html, "state_hch_coverage"), c("none", "80", "95")),
+    identical(selected_value(full_html, "state_hch_coverage"), "none"),
+    identical(selected_value(full_html, "msa_hch_coverage"), "80"),
     grepl("Known-population area coverage:", full_html, fixed = TRUE),
     grepl("input.state_instrument_type == &#39;historical_ch&#39;", full_html, fixed = TRUE),
     identical(app$pdf_help_button_topics("help_state_hch_coverage"), "03"))

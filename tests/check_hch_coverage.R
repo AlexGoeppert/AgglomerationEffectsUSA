@@ -19,8 +19,15 @@ check_hch_coverage_options <- function(app) {
   }
   shiny::testServer(app$server, {
     do.call(session$setInputs, settings)
-    previous <- NULL
-    run <- 0L
+    run <- 1L
+    session$setInputs(run_analysis = run)
+    initial <- isolate(analysis_output())
+    initial_csv <- read.csv(output$download_coefficients)
+    stopifnot(is.null(initial$error), identical(initial$state_hch_coverage, "none"),
+      initial$n_obs == 13L, "Georgia" %in% initial$historical_region_names,
+      all(initial_csv$known_area_coverage_required == 0),
+      grepl("Known-population area coverage:</strong> No coverage filter", output$analysis_details$html, fixed = TRUE))
+    previous <- initial$state_hch_coverage
     for (scope in c("states_only", "states_territories")) for (choice in c("80", "95", "none")) {
       session$setInputs(sample_scope = scope, state_hch_coverage = choice)
       if (!is.null(previous)) stopifnot(identical(isolate(analysis_output())$state_hch_coverage, previous))

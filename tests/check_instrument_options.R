@@ -94,7 +94,7 @@ local({
   result <- core$state_ch_result(settings, state)
   stopifnot(result$n_obs == 24L, all(result$data_for_fs$instrument < 0),
     isTRUE(all.equal(result$data_for_fs$instrument, state$HCH_1900, tolerance = 1e-12)), result$instrument_form == "historical_ch",
-    identical(result$state_hch_coverage, "80"), identical(result$hch_coverage_required, .80),
+    identical(result$state_hch_coverage, "none"), identical(result$hch_coverage_required, 0),
     abs(coef(result$models[[1]])[["ch_elasticity"]] - .08) < 1e-7)
   # Raw moments determine eligibility; masked build fields and omission flags do not.
   for (year in c(1790, 1900)) {
@@ -119,7 +119,7 @@ local({
   state$HCHobs_1900[1] <- 0
   state$HCHcover_1790[2] <- .79
   result <- core$state_ch_result(settings, state)
-  stopifnot(result$n_obs == 22L, result$population_missing_n == 2L)
+  stopifnot(result$n_obs == 23L, result$population_missing_n == 1L)
 
   # Apply the same selected coverage rule separately to both historical years.
   selected <- state

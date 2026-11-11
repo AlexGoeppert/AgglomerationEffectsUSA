@@ -289,8 +289,8 @@ ch_adjustment_label <- function(mode) {
   switch(mode, human_capital = "Schooling and college", both = "Geography + schooling and college", "Geography")
 }
 
-historical_ch_coverage <- function(value = NULL) {
-  if (is.null(value)) value <- "80"
+historical_ch_coverage <- function(value = NULL, default = "80") {
+  if (is.null(value)) value <- default
   value <- as.character(value)
   if (length(value) != 1L || is.na(value) || !value %in% c("80", "95", "none"))
     stop("Choose Historical CH coverage of 80%, 95%, or No coverage filter.")
@@ -1633,7 +1633,7 @@ ui <- fluidPage(title = "Agglomeration Effects USA",
                 "help_state_instrument_type", help_state_instrument),
               labeledInput("state_hch_coverage", "Known-population area coverage:",
                 selectInput("state_hch_coverage", NULL,
-                  c("80%" = "80", "95%" = "95", "No coverage filter" = "none"), "80"),
+                  c("No coverage filter" = "none", "80%" = "80", "95%" = "95"), "none"),
                 "help_state_hch_coverage", help_state_instrument),
               conditionalPanel("input.state_instrument_type == 'historical_ch'", hch_prediction_settings_ui())),
             conditionalPanel("!((input.analysis_level == 'State' && input.state_instrument_type == 'historical_ch') || (input.analysis_level == 'MSA' && input.approach != 'employment' && input.msa_density_measure == 'CH' && input.msa_instrument_type == 'historical_ch'))",
@@ -1754,7 +1754,7 @@ state_ch_result <- function(input, data) {
       !sample_year %in% historical_census_years || !iv_year %in% historical_census_years)
     stop("Choose a historical census year from 1790 to 1900.")
   historical_ch <- construction == "historical_ch"
-  coverage_choice <- historical_ch_coverage(input$state_hch_coverage)
+  coverage_choice <- historical_ch_coverage(input$state_hch_coverage, default = "none")
   hch_settings <- if (historical_ch) hch_prediction_settings(input) else NULL
   hch_years <- list()
   suffix <- ""

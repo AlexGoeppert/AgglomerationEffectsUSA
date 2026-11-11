@@ -10,10 +10,7 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    
-    container:
-      image: rocker/shiny-verse:4.5.3
-      
+
     env:
       CXXFLAGS: "-Wno-error=format-security"
       R_LIBS_USER: /tmp/agglomeration-r-library
@@ -22,33 +19,11 @@ jobs:
       RENV_CONFIG_CONSENT: "TRUE"
 
     steps:
-      - name: Install git and git-lfs
-        run: |
-          set -eu
-          if ! command -v git >/dev/null 2>&1; then
-            export DEBIAN_FRONTEND=noninteractive
-            set -- -o Acquire::Retries=3 -o DPkg::Lock::Timeout=60
-            if [ -r /etc/apt/sources.list.d/ubuntu.sources ]; then
-              set -- "$@" -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=-
-            fi
-            apt-get "$@" update
-            apt-get "$@" install -y --no-install-recommends git
-          fi
-          if ! command -v git-lfs >/dev/null 2>&1; then
-            tmp=$(mktemp -d)
-            archive="$tmp/git-lfs.tar.gz"
-            curl -fsSL --retry 3 -o "$archive" https://github.com/git-lfs/git-lfs/releases/download/v3.8.1/git-lfs-linux-amd64-v3.8.1.tar.gz
-            printf '%s  %s\n' e72cf723a4a660438862282e8aecf3885fc8123e88bfcad534cf6b941a354b75 "$archive" | sha256sum --check -
-            tar -xzf "$archive" -C "$tmp" git-lfs-3.8.1/git-lfs
-            install -m 0755 "$tmp/git-lfs-3.8.1/git-lfs" /usr/local/bin/git-lfs
-          fi
-          git --version
-          git lfs version
-
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           lfs: true
+          persist-credentials: false
 
       - name: Restore R dependency cache
         id: r-cache
@@ -62,7 +37,7 @@ jobs:
 
       - name: Verify locked R dependencies
         run: |
-          Rscript --vanilla .github/scripts/run-locked.R .github/scripts/restore.R
+          sh .github/scripts/ci-r.sh .github/scripts/restore.R
 
       - name: Save verified R dependency cache
         if: steps.r-cache.outputs.cache-hit != 'true'
@@ -74,21 +49,21 @@ jobs:
           key: r-4.5.3-linux-${{ hashFiles('renv.lock') }}
 
       - name: Check strict deployment dependencies
-        run: Rscript --vanilla .github/scripts/run-locked.R .github/scripts/check-deployment.R
+        run: sh .github/scripts/ci-r.sh .github/scripts/check-deployment.R
 
       - name: Prepare data by modern year
-        run: Rscript --vanilla .github/scripts/run-locked.R .github/scripts/build-app-data.R
+        run: sh .github/scripts/ci-r.sh .github/scripts/build-app-data.R
 
       - name: Check production memory and rendered results
         env:
           APP_TEST_OUTPUT: /tmp/agglomeration-checks
           APP_MEMORY_LIMIT_MB: "750"
-        run: Rscript --vanilla .github/scripts/run-locked.R tests/check_runtime_memory.R
+        run: sh .github/scripts/ci-r.sh tests/check_runtime_memory.R
 
       - name: Check deployment data files
         run: |
           printf '%s\n' 'tests' '.github' 'MSA_analysis_data.dta' 'master_county_build.dta' 'State_CH_analysis_data.dta' 'State_historical_analysis_data.dta' > .rscignore
-          Rscript --vanilla .github/scripts/run-locked.R .github/scripts/check-app-bundle.R
+          sh .github/scripts/ci-r.sh .github/scripts/check-app-bundle.R
 
       - name: Check app models and compare historical instruments
         env:
@@ -100,7 +75,7 @@ jobs:
             tests/check_instrument_options.R tests/test_hch_prediction.R tests/test_hch_fixed_instrument.R tests/check_hch_prediction_interface.R tests/check_hch_msa_state_interface.R tests/check_data_quality.R tests/check_dataflow.R tests/check_models.R \
             tests/check_geography.R tests/check_state_core.R tests/check_state.R tests/test_state_ch_adjustments.R tests/check_state_adjustments.R \
             tests/compare_coefficients.R tests/compare_instrument_years.R; do
-            if ! Rscript --vanilla .github/scripts/run-locked.R "$script"; then
+            if ! sh .github/scripts/ci-r.sh "$script"; then
               printf '::error title=Model validation failed::%s exited unsuccessfully\n' "$script"
               status=1
             fi
@@ -121,5 +96,5 @@ jobs:
           SHINYAPPS_TOKEN: ${{ secrets.SHINYAPPS_TOKEN }}
           SHINYAPPS_SECRET: ${{ secrets.SHINYAPPS_SECRET }}
         run: |
-          Rscript --vanilla .github/scripts/run-locked.R -e 'options(repos = c(CRAN = "https://cloud.r-project.org"), rsconnect.max.bundle.size = 5 * 1024^3); rsconnect::setAccountInfo(name = "agoepper", token = Sys.getenv("SHINYAPPS_TOKEN"), secret = Sys.getenv("SHINYAPPS_SECRET")); rsconnect::deployApp(appName = "AgglomerationEffectsUSA", forceUpdate = TRUE)'
+          sh .github/scripts/ci-r.sh -e 'options(repos = c(CRAN = "https://cloud.r-project.org"), rsconnect.max.bundle.size = 5 * 1024^3); rsconnect::setAccountInfo(name = "agoepper", token = Sys.getenv("SHINYAPPS_TOKEN"), secret = Sys.getenv("SHINYAPPS_SECRET")); rsconnect::deployApp(appName = "AgglomerationEffectsUSA", forceUpdate = TRUE)'
 
